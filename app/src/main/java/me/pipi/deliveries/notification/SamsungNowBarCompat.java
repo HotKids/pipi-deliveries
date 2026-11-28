@@ -8,6 +8,7 @@ import android.content.res.Configuration;
 import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Process;
 import android.util.Log;
 import android.widget.RemoteViews;
 
@@ -16,6 +17,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Samsung Now Bar visual hints layered on the standard promoted notification.
@@ -46,6 +48,8 @@ public final class SamsungNowBarCompat {
     private static volatile Context cachedAppContext;
     private static volatile String cachedUpdatePackage;
     private static volatile long cachedUpdateTime = -1L;
+    private static volatile String currentProcessSession =
+            Process.myPid() + ":" + UUID.randomUUID();
 
     static final class PendingNowBarProbe {
         final String namespace;
@@ -55,6 +59,8 @@ public final class SamsungNowBarCompat {
         final long postedAt;
         final long timeoutAt;
         final String osBuild;
+        final String processSession;
+        final String channelId;
         final String dismissalFingerprint;
         final String dismissalToken;
 
@@ -66,6 +72,8 @@ public final class SamsungNowBarCompat {
                 long postedAt,
                 long timeoutAt,
                 String osBuild,
+                String processSession,
+                String channelId,
                 String dismissalFingerprint,
                 String dismissalToken) {
             this.namespace = namespace == null ? "" : namespace;
@@ -75,9 +83,91 @@ public final class SamsungNowBarCompat {
             this.postedAt = postedAt;
             this.timeoutAt = timeoutAt;
             this.osBuild = osBuild == null ? "" : osBuild;
+            this.processSession = processSession == null ? "" : processSession;
+            this.channelId = channelId == null ? "" : channelId;
             this.dismissalFingerprint = dismissalFingerprint == null ? "" : dismissalFingerprint;
             this.dismissalToken = dismissalToken == null ? "" : dismissalToken;
         }
+    }
+
+    static String processSession() {
+        return currentProcessSession;
+    }
+
+    static void resetProcessSessionForTest() {
+        currentProcessSession = Process.myPid() + ":" + UUID.randomUUID();
+    }
+
+    /**
+     * Strips Unicode emoji/pictograph glyphs, variation selectors and ZWJ sequences for Samsung Now Bar
+     * text slots while collapsing any leading/inline double spaces left behind.
+     */
+    public static String stripNowBarEmoji(CharSequence value) {
+        if (value == null || value.length() == 0) return "";
+        String raw = value.toString();
+        StringBuilder filtered = new StringBuilder(raw.length());
+        int index = 0;
+        while (index < raw.length()) {
+            int cp = raw.codePointAt(index);
+            index += Character.charCount(cp);
+            if (isNowBarEmojiCodePoint(cp)) continue;
+            filtered.appendCodePoint(cp);
+        }
+        if (filtered.length() == 0) return "";
+        String[] lines = filtered.toString().split("\n", -1);
+        StringBuilder normalized = new StringBuilder(filtered.length());
+        for (String line : lines) {
+            String cleanedLine = collapseHorizontalSpaces(line);
+            if (cleanedLine.isEmpty()) continue;
+            if (normalized.length() > 0) normalized.append('\n');
+            normalized.append(cleanedLine);
+        }
+        return normalized.toString();
+    }
+
+    private static String collapseHorizontalSpaces(String line) {
+        int start = 0;
+        int end = line.length();
+        while (start < end && isHorizontalSpace(line.charAt(start))) start++;
+        while (end > start && isHorizontalSpace(line.charAt(end - 1))) end--;
+        if (start >= end) return "";
+        StringBuilder out = new StringBuilder(end - start);
+        boolean previousWasSpace = false;
+        for (int i = start; i < end; i++) {
+            char ch = line.charAt(i);
+            if (isHorizontalSpace(ch)) {
+                if (!previousWasSpace) {
+                    out.append(' ');
+                    previousWasSpace = true;
+                }
+            } else {
+                out.append(ch);
+                previousWasSpace = false;
+            }
+        }
+        return out.toString();
+    }
+
+    private static boolean isHorizontalSpace(char ch) {
+        return ch == ' ' || ch == '\t' || ch == '\u00A0';
+    }
+
+    private static boolean isNowBarEmojiCodePoint(int cp) {
+        if (cp == 0xFE0E || cp == 0xFE0F || cp == 0x200D || cp == 0x20E3) return true;
+        if (cp >= 0xE0020 && cp <= 0xE007F) return true;
+        if (cp >= 0x1F000 && cp <= 0x1FAFF) return true;
+        if (cp >= 0x2600 && cp <= 0x27BF) return true;
+        if (cp == 0x231A || cp == 0x231B || cp == 0x2328 || cp == 0x23CF
+                || (cp >= 0x23E9 && cp <= 0x23FA)) {
+            return true;
+        }
+        if (cp == 0x2B50 || cp == 0x2B55 || cp == 0x2934 || cp == 0x2935
+                || (cp >= 0x2B05 && cp <= 0x2B07) || cp == 0x2B1B || cp == 0x2B1C
+                || cp == 0x3030 || cp == 0x303D || cp == 0x3297 || cp == 0x3299) {
+            return true;
+        }
+        return (cp >= 0x25AA && cp <= 0x25AB) || cp == 0x25B6 || cp == 0x25C0
+                || (cp >= 0x25FB && cp <= 0x25FE);
     }
 
     private SamsungNowBarCompat() {}
@@ -140,11 +230,13 @@ public final class SamsungNowBarCompat {
                                          int color) {
         if (!applyStandardVisuals(context, builder, smallIcon, color)) return false;
         Bundle extras = new Bundle();
-        if (primary != null && primary.length() > 0) {
-            extras.putCharSequence("android.ongoingActivityNoti.nowbarPrimaryInfo", primary);
+        String cleanPrimary = stripNowBarEmoji(primary);
+        String cleanSecondary = stripNowBarEmoji(secondary);
+        if (!cleanPrimary.isEmpty()) {
+            extras.putCharSequence("android.ongoingActivityNoti.nowbarPrimaryInfo", cleanPrimary);
         }
-        if (secondary != null && secondary.length() > 0) {
-            extras.putCharSequence("android.ongoingActivityNoti.nowbarSecondaryInfo", secondary);
+        if (!cleanSecondary.isEmpty()) {
+            extras.putCharSequence("android.ongoingActivityNoti.nowbarSecondaryInfo", cleanSecondary);
         }
         builder.addExtras(extras);
         return true;
@@ -248,34 +340,42 @@ public final class SamsungNowBarCompat {
     public static Notification pickupNowBarCandidate(Notification enhanced, String capsule,
                                                      String primary, String secondary,
                                                      RemoteViews expanded) {
-        return nowBarCandidate(enhanced, capsule, primary, secondary, expanded);
+        return nowBarCandidate(enhanced, capsule, primary, secondary);
     }
 
     public static Notification nowBarCandidate(Notification enhanced, CharSequence capsule,
                                                CharSequence primary, CharSequence secondary,
                                                RemoteViews expanded) {
+        return nowBarCandidate(enhanced, capsule, primary, secondary);
+    }
+
+    public static Notification nowBarCandidate(Notification enhanced, CharSequence capsule,
+                                               CharSequence nowbarPrimary,
+                                               CharSequence nowbarSecondary) {
         Notification candidate = enhanced.clone();
         Bundle extras = candidate.extras;
+        String cleanPrimary = stripNowBarEmoji(nowbarPrimary);
+        String cleanSecondary = stripNowBarEmoji(nowbarSecondary);
         extras.putInt("android.ongoingActivityNoti.style", 1);
-        extras.putCharSequence("android.ongoingActivityNoti.nowbarPrimaryInfo",
-                primary == null ? "" : primary);
-        extras.putCharSequence("android.ongoingActivityNoti.nowbarSecondaryInfo",
-                secondary == null ? "" : secondary);
-        if (primary != null && primary.length() > 0) {
-            extras.putCharSequence("android.ongoingActivityNoti.primaryInfo", primary);
+        extras.putCharSequence("android.ongoingActivityNoti.nowbarPrimaryInfo", cleanPrimary);
+        extras.putCharSequence("android.ongoingActivityNoti.nowbarSecondaryInfo", cleanSecondary);
+        extras.remove("android.ongoingActivityNoti.expandedRemoteView");
+        extras.remove("android.ongoingActivityNoti.primaryInfo");
+        CharSequence expandedBody = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
+        if (expandedBody == null || expandedBody.length() == 0) {
+            expandedBody = extras.getCharSequence(Notification.EXTRA_TEXT);
+        }
+        if (expandedBody != null && expandedBody.length() > 0) {
+            extras.putCharSequence("android.ongoingActivityNoti.secondaryInfo", expandedBody);
+        } else {
+            extras.remove("android.ongoingActivityNoti.secondaryInfo");
         }
         if (capsule != null && capsule.length() > 0) {
             extras.putCharSequence("android.ongoingActivityNoti.chipExpandedText", capsule);
+        } else {
+            extras.remove("android.ongoingActivityNoti.chipExpandedText");
         }
         extras.putParcelable("android.ongoingActivityNoti.chipIcon", candidate.getSmallIcon());
-        if (expanded != null) {
-            extras.putParcelable("android.ongoingActivityNoti.expandedRemoteView", expanded);
-        }
-        CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
-        CharSequence statusSecondary = bigText != null && bigText.length() > 0 ? bigText : secondary;
-        if (statusSecondary != null && statusSecondary.length() > 0) {
-            extras.putCharSequence("android.ongoingActivityNoti.secondaryInfo", statusSecondary);
-        }
         if (candidate.actions != null && candidate.actions.length > 0) {
             extras.putInt("android.ongoingActivityNoti.actionType", 1);
             extras.putInt("android.ongoingActivityNoti.actionPrimarySet",
@@ -294,7 +394,7 @@ public final class SamsungNowBarCompat {
             int[] segmentColors,
             int progressColor,
             Icon trackerIcon) {
-        Notification candidate = nowBarCandidate(enhanced, capsule, primary, secondary, null);
+        Notification candidate = nowBarCandidate(enhanced, capsule, primary, secondary);
         if (segmentStarts == null || segmentColors == null
                 || segmentStarts.length == 0
                 || segmentStarts.length != segmentColors.length) {
@@ -374,6 +474,7 @@ public final class SamsungNowBarCompat {
             NotificationKey key,
             long postedAt,
             long timeoutAfterMs,
+            String channelId,
             String dismissalFingerprint,
             String dismissalToken) {
         if (context == null || key == null) return;
@@ -388,6 +489,8 @@ public final class SamsungNowBarCompat {
                     .put("postedAt", postedAt)
                     .put("timeoutAt", timeoutAt)
                     .put("osBuild", osBuildFingerprint())
+                    .put("processSession", currentProcessSession)
+                    .put("channelId", channelId == null ? "" : channelId)
                     .put("dismissalFingerprint", dismissalFingerprint == null ? "" : dismissalFingerprint)
                     .put("dismissalToken", dismissalToken == null ? "" : dismissalToken);
             synchronized (SamsungNowBarCompat.class) {
@@ -398,6 +501,10 @@ public final class SamsungNowBarCompat {
         } catch (Throwable error) {
             Log.w(TAG, "Unable to persist Now Bar pending probe kind=" + error.getClass().getSimpleName());
         }
+    }
+
+    static boolean hasPendingNowBarProbe(Context context, String namespace) {
+        return context != null && compatPrefs(context).contains(pendingProbeKey(namespace));
     }
 
     static PendingNowBarProbe readPendingNowBarProbe(Context context, String namespace) {
@@ -434,6 +541,8 @@ public final class SamsungNowBarCompat {
                     obj.optLong("postedAt", 0L),
                     obj.optLong("timeoutAt", 0L),
                     obj.optString("osBuild", ""),
+                    obj.optString("processSession", ""),
+                    obj.optString("channelId", ""),
                     obj.optString("dismissalFingerprint", ""),
                     obj.optString("dismissalToken", ""));
         } catch (Throwable invalid) {

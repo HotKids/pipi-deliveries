@@ -8,6 +8,7 @@ import { cloudParcelMetadataForCache, readCachedCloudParcelMetadata, recordCloud
 import { gatewayCredentialForLocalCache, gatewayCredentialGeneration, saveGatewayToken } from "../services/credentials";
 import { GatewayError } from "../services/gateway";
 import { internationalShipment } from "../services/international-records";
+import { displayDeliveryEstimate } from "../services/platform-parcel-data";
 import { displayedPlatformFields } from "../services/platform-parcel-merge";
 import { displayWaybill, unprojectedAccountOrder } from "../services/shipment-policy";
 import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
@@ -87,7 +88,8 @@ finish({ metadata: updated });
 await refreshing;
 assert.equal(second().cloudDetails.metadata.productName, updated.productName);
 assert.equal(mount()().cloudDetails.metadata.productName, updated.productName);
-assert.equal(displayedPlatformFields(shipment, now, mount()().cloudDetails.metadata).estimate, updated.deliveryEstimate);
+assert.equal(displayedPlatformFields(shipment, now, mount()().cloudDetails.metadata).estimate,
+  displayDeliveryEstimate(updated.deliveryEstimate, updated.deliveryEstimateObservedAt, now));
 
 reply = async () => { throw new GatewayError("offline"); };
 await second().refreshCloudMetadata();

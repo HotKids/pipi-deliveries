@@ -300,7 +300,7 @@ function positiveHostBrand(
   return undefined
 }
 
-function contentBrand(runtime: PickupRuntime, text: string): PickupBrandRule | undefined {
+export function contentBrand(runtime: PickupRuntime, text: string): PickupBrandRule | undefined {
   let match = brandFromWords(runtime, text, runtime.trademarkWords)
   if (match) return match
   match = brandFromWords(runtime, text, runtime.loyaltyWords)

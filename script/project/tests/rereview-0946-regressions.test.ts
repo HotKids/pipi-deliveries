@@ -107,6 +107,7 @@ const {
   setShipmentNote,
 } = await import("../services/storage.ts");
 const { listHeadline, shipmentPresentationStatus, statusTextTint } = await import("../services/status.ts");
+const { selectForegroundPickupCardsProjection, selectForegroundShipmentsProjection } = await import("../services/ui-state.ts");
 
 const OWNER_ID = "a".repeat(64);
 const ENDPOINT_ID = `scripting-parcel:${"b".repeat(64)}`;
@@ -1129,30 +1130,13 @@ test("0.9.46 Phase 1: v3_list enhancement budget guard, widget reload coalescing
 test("0.9.46 Phase 3 & Phase 4: foreground projection stability and cancelable non-blocking diagnostics snapshot", async () => {
   resetEnv();
 
-  // Phase 3: slice pure-TS foreground projection helpers from index.tsx before JSX!
+  // Phase 3: test foreground projection helpers directly from ui-state.ts (re-exported by index.tsx)
   const rawIndexSrc = readFileSync(new URL("../index.tsx", import.meta.url), "utf8");
-  const projStart = rawIndexSrc.indexOf("function sameForegroundShipmentProjection(");
-  const projEnd = rawIndexSrc.indexOf("function usePickupTabState(");
-  assert.ok(projStart > 0 && projEnd > projStart);
-  const projCode = stripTypeScriptTypes(rawIndexSrc.slice(projStart, projEnd), { mode: "transform" })
-    .replace(/^export /gm, "");
-  const projections = runInNewContext(
-    `${projCode}\n;({ selectForegroundShipmentsProjection, selectForegroundPickupCardsProjection });`,
-    {
-      displayWaybill: (s: Shipment) => s.timeline.waybill,
-      listHeadline,
-      shipmentPresentationStatus,
-      statusTextTint,
-      resolveShipmentTitle: (s: Shipment) => s.platformFields?.manualTitle || s.timeline.companyName,
-      shipmentStatusLabel: (s: Shipment) => s.timeline.semantic,
-      shipmentSubtitle: (s: Shipment) => s.timeline.latestDetail,
-      displayedPlatformFields: (s: Shipment) => ({ estimate: s.platformFields?.estimate?.text || "" }),
-      cainiaoParcelProductImage: () => "",
-      pddParcelProductImage: () => "",
-    },
-  ) as {
-    selectForegroundShipmentsProjection: (prev: readonly Shipment[], next: readonly Shipment[]) => readonly Shipment[];
-    selectForegroundPickupCardsProjection: <T extends Record<string, unknown>>(prev: readonly T[], next: readonly T[]) => readonly T[];
+  assert.match(rawIndexSrc, /selectForegroundShipmentsProjection/);
+  assert.match(rawIndexSrc, /selectForegroundPickupCardsProjection/);
+  const projections = {
+    selectForegroundShipmentsProjection,
+    selectForegroundPickupCardsProjection,
   };
 
   const baseRow = makeManualShipment("YT7700000001201");

@@ -44,8 +44,11 @@ import {
   manualPreviewNavigationTarget,
   persistedShipmentNavigationTarget,
   promotedPendingShipmentNavigationTarget,
+  sameShipmentItemList,
+  sameShipmentRowPresentation,
   selectedNavigationShipment,
   shipmentNavigationTargetId,
+  type ShipmentListItem,
   type ShipmentNavigationTarget,
 } from "../services/ui-state";
 import {
@@ -76,7 +79,7 @@ import {
 const CARRIER_DETECTION_MIN_LENGTH = 6;
 const CARRIER_DETECTION_DEBOUNCE_MS = 600;
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
-import { listHeadline, normalizeWaybill, shipmentPresentationStatus, statusTextTint, waybillSuffix } from "../services/status";
+import { normalizeWaybill, shipmentPresentationStatus, waybillSuffix } from "../services/status";
 import { beginDiagnosticOperation, diagnosticErrorDetails } from "../services/logger";
 import {
   displayWaybill,
@@ -152,60 +155,7 @@ function shipmentFilter(semantic: StatusSemantic): Exclude<ShipmentFilter, "all"
   }
 }
 
-type ShipmentListItem = { id: string; shipment: Shipment; deleting: boolean; completing: boolean };
-
-function sameShipmentRowPresentation(left: Shipment, right: Shipment): boolean {
-  if (left === right) return true;
-  const leftPresentation = shipmentPresentationStatus(left);
-  const rightPresentation = shipmentPresentationStatus(right);
-  if (
-    leftPresentation.semantic !== rightPresentation.semantic ||
-    leftPresentation.text !== rightPresentation.text
-  ) {
-    return false;
-  }
-  const leftTone = statusTextTint(leftPresentation.semantic, { label: leftPresentation.text });
-  const rightTone = statusTextTint(rightPresentation.semantic, { label: rightPresentation.text });
-  if (leftTone.light !== rightTone.light || leftTone.dark !== rightTone.dark) {
-    return false;
-  }
-  const leftHeadline = Array.isArray(left.timeline.tracks) ? listHeadline(left.timeline) : null;
-  const rightHeadline = Array.isArray(right.timeline.tracks) ? listHeadline(right.timeline) : null;
-  return (left.note || "").trim() === (right.note || "").trim() &&
-    Boolean(left.forcedCompletedAtMs) === Boolean(right.forcedCompletedAtMs) &&
-    left.statusPresentation?.scope === right.statusPresentation?.scope &&
-    left.statusPresentation?.semantic === right.statusPresentation?.semantic &&
-    left.statusPresentation?.text === right.statusPresentation?.text &&
-    left.timeline.normalizedStatus?.scope === right.timeline.normalizedStatus?.scope &&
-    left.timeline.normalizedStatus?.semantic === right.timeline.normalizedStatus?.semantic &&
-    left.timeline.normalizedStatus?.code === right.timeline.normalizedStatus?.code &&
-    left.timeline.normalizedStatus?.text === right.timeline.normalizedStatus?.text &&
-    left.timeline.normalizedStatus?.structured === right.timeline.normalizedStatus?.structured &&
-    left.identity.companyName === right.identity.companyName &&
-    left.identity.courierCode === right.identity.courierCode &&
-    left.identity.sender === right.identity.sender &&
-    left.identity.accountOrder === right.identity.accountOrder &&
-    left.identity.projectedWaybill === right.identity.projectedWaybill &&
-    displayWaybill(left) === displayWaybill(right) &&
-    left.timeline.semantic === right.timeline.semantic &&
-    left.timeline.latestTimeText === right.timeline.latestTimeText &&
-    left.timeline.latestDetail === right.timeline.latestDetail &&
-    leftHeadline?.timeText === rightHeadline?.timeText &&
-    leftHeadline?.detail === rightHeadline?.detail &&
-    left.timeline.headlineDisplay?.timeText === right.timeline.headlineDisplay?.timeText &&
-    left.timeline.headlineDisplay?.detail === right.timeline.headlineDisplay?.detail;
-}
-
-function sameShipmentItemList(
-  left: readonly ShipmentListItem[] | undefined,
-  right: readonly ShipmentListItem[],
-): boolean {
-  if (!left || left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
+export { sameShipmentItemList, sameShipmentRowPresentation, type ShipmentListItem };
 
 export function HomePage(props: {
   state: AppState;

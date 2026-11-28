@@ -118,13 +118,13 @@ export function displayDeliveryEstimate(rawText: string, capturedAt: number, now
   const text = rawText.replace(/。$/, "");
   if (capturedAt <= 0 || capturedAt > now || !/^预计[^\r\n"<>。；;]{1,70}?送达$/.test(text)) return "";
   const matches = Array.from(
-    text.matchAll(/(今天|今日|明天|后天)|(?<![:\d])(?:(\d{4})[年/-])?(\d{1,2})(?:月(\d{1,2})日?|[/-](\d{1,2})(?![:\d/-]))/g),
+    text.matchAll(/(今天|今日|明天|明日|后天)|(?<![:\d])(?:(\d{4})[年/-])?(\d{1,2})(?:月(\d{1,2})日?|[/-](\d{1,2})(?![:\d/-]))(?:[（(]?周[一二三四五六日天][)）]?)?/g),
   );
   const day = matches[matches.length - 1];
   if (!day) return "";
   const observed = chinaDay(capturedAt);
   let arrival: number;
-  if (day[1]) arrival = observed + (day[1] === "明天" ? 1 : day[1] === "后天" ? 2 : 0) * DAY;
+  if (day[1]) arrival = observed + (day[1] === "明天" || day[1] === "明日" ? 1 : day[1] === "后天" ? 2 : 0) * DAY;
   else {
     let year = Number(day[2]) || new Date(observed).getUTCFullYear();
     const month = Number(day[3]);
@@ -136,15 +136,21 @@ export function displayDeliveryEstimate(rawText: string, capturedAt: number, now
   }
   const today = chinaDay(now);
   if (arrival < today || arrival > observed + 60 * DAY) return "";
-  if (today === observed || !day[1]) return text;
-  const date = new Date(arrival);
-  return text.slice(0, day.index) + (date.getUTCMonth() + 1) + "月" + date.getUTCDate() + "日" +
-    text.slice((day.index ?? 0) + day[0].length);
+  const diffDays = Math.round((arrival - today) / DAY);
+  const dateLabel = diffDays === 0
+    ? "今天"
+    : diffDays === 1
+      ? "明天"
+      : (() => {
+          const date = new Date(arrival);
+          return (date.getUTCMonth() + 1) + "月" + date.getUTCDate() + "日";
+        })();
+  return text.slice(0, day.index) + dateLabel + text.slice((day.index ?? 0) + day[0].length);
 }
 
 export function normalizeParcelDeliveryEstimate(raw: unknown, now = Date.now()): string {
   const value = cleanScalarText(raw).match(/预计[^\r\n"<>。；;]{1,70}?送达/)?.[0] || "";
-  return displayDeliveryEstimate(value, now, now);
+  return displayDeliveryEstimate(value, now, now) ? value : "";
 }
 
 export function deliveryForecast(raw: unknown, now: number): string {

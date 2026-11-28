@@ -65,6 +65,7 @@ const EXPRESS_SIGN_RETENTION_MS = 21 * 86_400_000;
 const CLOUD_TITLE_CACHE_LIMIT = 64;
 const ESTIMATE_MAX_CHARS = 80;
 export const PARCEL_CLOUD_QUARANTINE_TTL_MS = 24 * 60 * 60 * 1_000;
+export const PARCEL_CLOUD_QUARANTINE_MAX_REJECTIONS = 2;
 
 const WAYBILL_PATTERN = /^[A-Z0-9]{6,64}$/;
 const WATCH_WAYBILL_PATTERN = /^[A-Z0-9][A-Z0-9_-]{0,63}$/;
@@ -178,7 +179,13 @@ export type ParcelSyncedBaseline = Readonly<{
 
 export type ParcelQuarantinedRecord = Readonly<{
   digest: string;
-  expiresAtMs: number;
+  expiresAtMs?: number;
+  permanent?: true;
+}>;
+
+export type ParcelQuarantineHistoryEntry = Readonly<{
+  digest: string;
+  rejections: number;
 }>;
 
 export type ParcelCloudSnapshot = Readonly<{
@@ -196,6 +203,7 @@ export type ParcelCloudSnapshot = Readonly<{
   edits: Readonly<Record<string, ParcelCloudEdit>>;
   pddLinks?: Readonly<Record<string, CloudParcelPddLink>>;
   quarantined?: Readonly<Record<string, ParcelQuarantinedRecord>>;
+  quarantineHistory?: Readonly<Record<string, ParcelQuarantineHistoryEntry>>;
   legacyManualTitleCleaned?: true;
   batch?: ParcelCloudBatch;
 }>;
@@ -380,11 +388,39 @@ function normalizeQuarantinedEntries(
   if (!isPlainObject(raw)) return {};
   const result: Record<string, ParcelQuarantinedRecord> = {};
   for (const [id, entry] of Object.entries(raw)) {
+    if (typeof entry === "string") {
+      if (entry) result[id] = { digest: entry, permanent: true };
+      continue;
+    }
+    if (entry === true || (entry && typeof entry !== "object")) {
+      result[id] = { digest: "*", permanent: true };
+      continue;
+    }
     if (!isPlainObject(entry)) continue;
     const digest = typeof entry.digest === "string" ? entry.digest : "";
+    if (!digest) continue;
+    if (entry.permanent === true) {
+      result[id] = { digest, permanent: true };
+      continue;
+    }
     const expiresAtMs = typeof entry.expiresAtMs === "number" ? entry.expiresAtMs : 0;
-    if (!digest || !Number.isFinite(expiresAtMs) || expiresAtMs <= now) continue;
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now) continue;
     result[id] = { digest, expiresAtMs: Math.trunc(expiresAtMs) };
+  }
+  return result;
+}
+
+function normalizeQuarantineHistoryEntries(
+  raw: unknown,
+): Record<string, ParcelQuarantineHistoryEntry> {
+  if (!isPlainObject(raw)) return {};
+  const result: Record<string, ParcelQuarantineHistoryEntry> = {};
+  for (const [id, entry] of Object.entries(raw)) {
+    if (!isPlainObject(entry)) continue;
+    const digest = typeof entry.digest === "string" ? entry.digest : "";
+    const rejections = typeof entry.rejections === "number" ? Math.trunc(entry.rejections) : 0;
+    if (!digest || !Number.isFinite(rejections) || rejections <= 0) continue;
+    result[id] = { digest, rejections };
   }
   return result;
 }
@@ -394,6 +430,7 @@ export function readParcelCloudState(scope: string, now = Date.now()): ParcelClo
   const raw = readStoreFile().scopes[scope];
   if (!raw || raw.schemaVersion !== 1) return emptyParcelCloudSnapshot();
   const quarantined = normalizeQuarantinedEntries(raw.quarantined, now);
+  const quarantineHistory = normalizeQuarantineHistoryEntries(raw.quarantineHistory);
   return {
     schemaVersion: 1,
     ...(raw.session ? { session: raw.session } : {}),
@@ -404,6 +441,7 @@ export function readParcelCloudState(scope: string, now = Date.now()): ParcelClo
     edits: isPlainObject(raw.edits) ? raw.edits : {},
     ...(isPlainObject(raw.pddLinks) ? { pddLinks: raw.pddLinks } : {}),
     ...(Object.keys(quarantined).length ? { quarantined } : {}),
+    ...(Object.keys(quarantineHistory).length ? { quarantineHistory } : {}),
     ...(raw.legacyManualTitleCleaned === true ? { legacyManualTitleCleaned: true as const } : {}),
     ...(raw.batch ? { batch: raw.batch } : {}),
   };
@@ -890,20 +928,28 @@ export function applyParcelReceipt(
     delete synced[id];
   } else {
     const existingLocalKey = synced[id]?.localKey || defaultLocalKeyForMutation(mutation);
+    const effectiveReceiptPayload = remote[id] && !remote[id]!.deleted ? remote[id]!.payload : mutation.payload;
+    const syncedLifecycle =
+      mutation.type === "parcel_handoff"
+        ? (cloudTime(effectiveReceiptPayload?.completedAt, Math.max(now, editedAt)) > 0 ? "history" : "active")
+        : (mutation.lifecycle ?? "active");
     synced[id] = {
       revision: receipt.revision,
       type: mutation.type,
       localKey: existingLocalKey,
       editedAt,
-      ...(mutation.type === "express_note" && typeof mutation.payload?.note === "string"
-        ? { noteText: mutation.payload.note }
-        : {}),
-      ...(isWholeRecordType(mutation.type) && mutation.payload
+      ...((mutation.type === "express_note" || mutation.type === "parcel_pickup" || mutation.type === "parcel_handoff") &&
+        typeof effectiveReceiptPayload?.note === "string"
+        ? { noteText: effectiveReceiptPayload.note.trim() }
+        : (mutation.type === "parcel_pickup" || mutation.type === "parcel_handoff")
+          ? { noteText: "" }
+          : {}),
+      ...(isWholeRecordType(mutation.type) && effectiveReceiptPayload
         ? {
             localDigest: canonicalWholeRecordDigest(
               mutation.type,
-              mutation.lifecycle ?? "active",
-              mutation.payload,
+              syncedLifecycle,
+              effectiveReceiptPayload,
               Math.max(now, editedAt),
             ),
           }
@@ -912,11 +958,17 @@ export function applyParcelReceipt(
   }
   const edits: Record<string, ParcelCloudEdit> = { ...state.edits };
   if (edits[id]?.mutationId === mutation.mutationId) delete edits[id];
+  const quarantined = state.quarantined ? { ...state.quarantined } : undefined;
+  if (quarantined) delete quarantined[id];
+  const quarantineHistory = state.quarantineHistory ? { ...state.quarantineHistory } : undefined;
+  if (quarantineHistory) delete quarantineHistory[id];
   return {
     ...state,
     remote,
     synced,
     edits,
+    ...(quarantined && Object.keys(quarantined).length ? { quarantined } : { quarantined: undefined }),
+    ...(quarantineHistory && Object.keys(quarantineHistory).length ? { quarantineHistory } : { quarantineHistory: undefined }),
     session: { ...state.session, nextSequence: session.nextSequence },
     batch: undefined,
   };
@@ -1134,14 +1186,31 @@ export function dropRejectedParcelBatch(
     mutation.historyAt ?? 0,
     mutation.payload,
   );
+  const priorHistory = normalizeQuarantineHistoryEntries(state.quarantineHistory);
+  const activeQuarantine = normalizeQuarantinedEntries(state.quarantined, now);
+  const priorQuarantine = activeQuarantine[id];
+  const priorCount = priorHistory[id]?.digest === digest
+    ? priorHistory[id]!.rejections
+    : priorQuarantine && (priorQuarantine.digest === digest || priorQuarantine.digest === "*")
+      ? (priorQuarantine.permanent ? PARCEL_CLOUD_QUARANTINE_MAX_REJECTIONS : 1)
+      : 0;
+  const rejections = priorCount + 1;
+  const permanent = rejections >= PARCEL_CLOUD_QUARANTINE_MAX_REJECTIONS;
   const quarantined: Record<string, ParcelQuarantinedRecord> = {
-    ...normalizeQuarantinedEntries(state.quarantined, now),
-    [id]: { digest, expiresAtMs: Math.trunc(now) + PARCEL_CLOUD_QUARANTINE_TTL_MS },
+    ...activeQuarantine,
+    [id]: permanent
+      ? { digest, permanent: true }
+      : { digest, expiresAtMs: Math.trunc(now) + PARCEL_CLOUD_QUARANTINE_TTL_MS },
+  };
+  const quarantineHistory: Record<string, ParcelQuarantineHistoryEntry> = {
+    ...priorHistory,
+    [id]: { digest, rejections },
   };
   return {
     ...state,
     edits,
     quarantined,
+    quarantineHistory,
     batch: undefined,
   };
 }
@@ -2184,7 +2253,8 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
               const localDigest = canonicalWholeRecordDigest("parcel_pickup", localLifecycle, localPayload, now);
               const unsynced = !previousSync || previousSync.localDigest !== localDigest;
               const localEditedAt = Math.max(localCap, localComp, shipment.updatedAtMs || localCap);
-              if (unsynced) {
+              const remoteCompletesUnfinished = completedAt > 0 && localComp === 0;
+              if (unsynced && !remoteCompletesUnfinished) {
                 if (envelope.editedAt < localEditedAt) {
                   localTieWon = true;
                   return shipment;
@@ -2199,7 +2269,7 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
               }
             }
             const nextPickup = {
-              ...(platform ? { platform } : {}),
+              ...(platform ? { platform } : shipment.pickup?.platform ? { platform: shipment.pickup.platform } : {}),
               waybill: displayWaybill(shipment),
               waybillGeneration: shipment.waybillReuseAtMs ?? 0,
               capturedAtMs: capturedAt,
@@ -2220,6 +2290,7 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
             type: "parcel_pickup",
             localKey: `waybill_pickup:${waybill}`,
             editedAt: envelope.editedAt,
+            noteText: note ?? "",
             localDigest: canonicalWholeRecordDigest("parcel_pickup", envelope.lifecycle, payload, now),
           };
           continue;
@@ -2237,27 +2308,38 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
         );
         const existingItem = matchIndex >= 0 ? (pickupRecords[matchIndex] as StandaloneParcelPickup) : undefined;
         const localId = existingItem?.id ?? envelope.recordId;
+        const remoteHasNote = Object.hasOwn(payload, "note");
+        const remoteNote = note ?? "";
+        let mergedCompletedAt = completedAt || (existingItem?.completedAtMs ?? 0);
+        let mergedNote = remoteHasNote ? remoteNote : (existingItem?.note?.trim() ?? "");
+        let mergedEditedAtMs: number | undefined;
         if (existingItem) {
           const localCap = Math.min(now, Math.trunc(existingItem.capturedAtMs));
           const localComp = existingItem.completedAtMs && existingItem.completedAtMs > 0
             ? Math.min(now, Math.trunc(existingItem.completedAtMs))
             : 0;
           const localLoc = [existingItem.locationName, existingItem.address].filter(Boolean).join(" ").trim();
+          const localNote = existingItem.note?.trim() ?? "";
+          const syncedNote = previousSync?.noteText ?? "";
+          const localNoteChanged = previousSync ? localNote !== syncedNote : localNote.length > 0;
+          const remoteNoteChanged = previousSync ? (remoteHasNote && remoteNote !== syncedNote) : (remoteHasNote && remoteNote.length > 0);
           const localPayload: Record<string, unknown> = {
             brandId: platformToStandaloneBrand(existingItem.platform),
             code: existingItem.code.trim().slice(0, 256),
             ...(localLoc ? { location: localLoc.slice(0, 512) } : {}),
             capturedAt: localCap,
             ...(localComp > 0 ? { completedAt: localComp } : {}),
-            ...(existingItem.note !== undefined ? { note: existingItem.note } : Object.hasOwn(payload, "note") ? { note: "" } : {}),
+            ...(existingItem.note !== undefined ? { note: existingItem.note } : remoteHasNote ? { note: "" } : {}),
           };
           const localLifecycle = localComp > 0 ? "history" : "active";
           const localDigest = canonicalWholeRecordDigest("parcel_pickup", localLifecycle, localPayload, now);
           const unsynced = !previousSync || previousSync.localDigest !== localDigest;
-          const localEditedAt = previousSync && previousSync.localDigest !== undefined && previousSync.localDigest !== localDigest
-            ? now
-            : Math.max(localCap, localComp);
-          if (unsynced) {
+          const localEditedAt = Math.min(
+            now,
+            Math.max(localCap, localComp, existingItem.editedAtMs ? Math.trunc(existingItem.editedAtMs) : 0),
+          );
+          const remoteCompletesUnfinished = completedAt > 0 && localComp === 0;
+          if (unsynced && !remoteCompletesUnfinished) {
             if (envelope.editedAt < localEditedAt) {
               delete nextSynced[envelope.recordId];
               continue;
@@ -2270,13 +2352,32 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
               continue;
             }
           }
+          mergedCompletedAt = completedAt > 0 && localComp > 0
+            ? (envelope.editedAt >= localEditedAt ? completedAt : localComp)
+            : (completedAt || localComp);
+          if (localNoteChanged && !remoteNoteChanged) {
+            mergedNote = localNote;
+          } else if (localNoteChanged && remoteNoteChanged) {
+            mergedNote =
+              envelope.editedAt > localEditedAt ||
+              (envelope.editedAt === localEditedAt &&
+                !localWinsWholeRecordTie("parcel_pickup", localLifecycle, localPayload, envelope, now))
+                ? remoteNote
+                : localNote;
+          } else {
+            mergedNote = remoteHasNote ? remoteNote : localNote;
+          }
+          if (localNoteChanged && mergedNote === localNote && (!remoteHasNote || remoteNote !== localNote)) {
+            mergedEditedAtMs = Math.min(now, Math.max(localEditedAt, envelope.editedAt + 1));
+          }
         }
-        if (completedAt > 0 && now - completedAt > RETENTION_CUTOFF_MS) {
+        if (mergedCompletedAt > 0 && now - mergedCompletedAt > RETENTION_CUTOFF_MS) {
           nextSynced[envelope.recordId] = {
             revision: envelope.revision,
             type: "parcel_pickup",
             localKey: `code:${localId}`,
             editedAt: envelope.editedAt,
+            noteText: remoteNote,
             localDigest: canonicalWholeRecordDigest("parcel_pickup", envelope.lifecycle, payload, now),
           };
           continue;
@@ -2288,12 +2389,9 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           code,
           capturedAtMs: capturedAt,
           ...(location ? { locationName: location } : {}),
-          ...(completedAt > 0
-            ? { completedAtMs: completedAt }
-            : existingItem?.completedAtMs
-              ? { completedAtMs: existingItem.completedAtMs }
-              : {}),
-          ...(note !== undefined ? (note ? { note } : {}) : existingItem?.note ? { note: existingItem.note } : {}),
+          ...(mergedCompletedAt > 0 ? { completedAtMs: mergedCompletedAt } : {}),
+          ...(mergedNote ? { note: mergedNote } : {}),
+          ...(mergedEditedAtMs ? { editedAtMs: mergedEditedAtMs } : {}),
         };
         if (matchIndex >= 0) {
           if (JSON.stringify(pickupRecords[matchIndex]) !== JSON.stringify(mergedRecord)) {
@@ -2309,6 +2407,7 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           type: "parcel_pickup",
           localKey: `code:${localId}`,
           editedAt: envelope.editedAt,
+          noteText: remoteNote,
           localDigest: canonicalWholeRecordDigest("parcel_pickup", envelope.lifecycle, payload, now),
         };
       } else {
@@ -2328,6 +2427,15 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
         );
         const existingItem = matchIndex >= 0 ? (pickupRecords[matchIndex] as ParcelHandoffRecord) : undefined;
         const localId = existingItem?.id ?? envelope.recordId;
+        const remoteHasNote = Object.hasOwn(payload, "note");
+        const remoteNote = note ?? "";
+        let mergedCompletedAt = completedAt || (existingItem?.completedAtMs ?? 0);
+        let mergedWinStart = windowStartAt;
+        let mergedWinEnd = windowEndAt;
+        let mergedWinText = windowText;
+        let mergedExpires = expiresAt;
+        let mergedNote = remoteHasNote ? remoteNote : (existingItem?.note?.trim() ?? "");
+        let mergedEditedAtMs: number | undefined;
         if (existingItem) {
           const localCap = Math.min(now, Math.trunc(existingItem.capturedAtMs));
           const localWinEnd = existingItem.windowEndAtMs && existingItem.windowEndAtMs > 0 ? Math.trunc(existingItem.windowEndAtMs) : 0;
@@ -2341,8 +2449,10 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           const localComp = rawLocalComp > 0
             ? (localExpires > 0 && rawLocalComp >= localExpires ? Math.max(1, localExpires - 1) : rawLocalComp)
             : 0;
-          const localDeadline = parcelHandoffDeadline(existingItem);
-          const localHistoric = localComp > 0 || (localExpires > 0 && localExpires <= now) || Boolean(localDeadline !== undefined && localDeadline <= now && localExpires > 0);
+          const localNote = existingItem.note?.trim() ?? "";
+          const syncedNote = previousSync?.noteText ?? "";
+          const localNoteChanged = previousSync ? localNote !== syncedNote : localNote.length > 0;
+          const remoteNoteChanged = previousSync ? (remoteHasNote && remoteNote !== syncedNote) : (remoteHasNote && remoteNote.length > 0);
           const localPayload: Record<string, unknown> = {
             platform: existingItem.platform,
             code: existingItem.code.trim().slice(0, 256),
@@ -2352,36 +2462,69 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
             ...(existingItem.windowText ? { windowText: existingItem.windowText.slice(0, 128) } : {}),
             expiresAt: localExpires,
             ...(localComp > 0 ? { completedAt: localComp } : {}),
-            ...(existingItem.note !== undefined ? { note: existingItem.note } : Object.hasOwn(payload, "note") ? { note: "" } : {}),
+            ...(existingItem.note !== undefined ? { note: existingItem.note } : remoteHasNote ? { note: "" } : {}),
           };
-          const localLifecycle = localHistoric ? "history" : "active";
-          const localDigest = canonicalWholeRecordDigest("parcel_handoff", localLifecycle, localPayload, now);
-          const unsynced = !previousSync || previousSync.localDigest !== localDigest;
-          const localEditedAt = previousSync && previousSync.localDigest !== undefined && previousSync.localDigest !== localDigest
-            ? now
-            : Math.max(localCap, localComp);
-          if (unsynced) {
+          // Passive wall-clock handoff window expiry (`expired`) is a local projection, NOT a user edit.
+          const localUserLifecycle = localComp > 0 ? "history" : "active";
+          const localUserDigest = canonicalWholeRecordDigest("parcel_handoff", localUserLifecycle, localPayload, now);
+          const unsyncedUserEdit = !previousSync || previousSync.localDigest !== localUserDigest;
+          const localEditedAt = Math.min(
+            now,
+            Math.max(localCap, localComp, existingItem.editedAtMs ? Math.trunc(existingItem.editedAtMs) : 0),
+          );
+          const remoteCompletesUnfinished = completedAt > 0 && localComp === 0;
+          if (unsyncedUserEdit && !remoteCompletesUnfinished) {
             if (envelope.editedAt < localEditedAt) {
               delete nextSynced[envelope.recordId];
               continue;
             }
             if (
               envelope.editedAt === localEditedAt &&
-              localWinsWholeRecordTie("parcel_handoff", localLifecycle, localPayload, envelope, now)
+              localWinsWholeRecordTie("parcel_handoff", localUserLifecycle, localPayload, envelope, now)
             ) {
               delete nextSynced[envelope.recordId];
               continue;
             }
           }
+          mergedCompletedAt = completedAt > 0 && localComp > 0
+            ? (envelope.editedAt >= localEditedAt ? completedAt : existingItem.completedAtMs!)
+            : (completedAt || (existingItem.completedAtMs ?? 0));
+          if (
+            existingItem.editedAtMs &&
+            localEditedAt > envelope.editedAt &&
+            (localWinStart !== windowStartAt || localWinEnd !== windowEndAt)
+          ) {
+            mergedWinStart = localWinStart;
+            mergedWinEnd = localWinEnd;
+            mergedWinText = existingItem.windowText ?? "";
+            mergedExpires = localExpires;
+            mergedEditedAtMs = Math.min(now, Math.max(localEditedAt, envelope.editedAt + 1));
+          }
+          if (localNoteChanged && !remoteNoteChanged) {
+            mergedNote = localNote;
+          } else if (localNoteChanged && remoteNoteChanged) {
+            mergedNote =
+              envelope.editedAt > localEditedAt ||
+              (envelope.editedAt === localEditedAt &&
+                !localWinsWholeRecordTie("parcel_handoff", localUserLifecycle, localPayload, envelope, now))
+                ? remoteNote
+                : localNote;
+          } else {
+            mergedNote = remoteHasNote ? remoteNote : localNote;
+          }
+          if (localNoteChanged && mergedNote === localNote && (!remoteHasNote || remoteNote !== localNote)) {
+            mergedEditedAtMs = Math.min(now, Math.max(localEditedAt, envelope.editedAt + 1));
+          }
         }
-        const terminalClock = completedAt || (expiresAt > 0 && expiresAt <= now ? expiresAt : 0);
+        const terminalClock = mergedCompletedAt || (mergedExpires > 0 && mergedExpires <= now ? mergedExpires : 0);
         if (terminalClock > 0 && now - terminalClock > RETENTION_CUTOFF_MS) {
           nextSynced[envelope.recordId] = {
             revision: envelope.revision,
             type: "parcel_handoff",
             localKey: `code:${localId}`,
             editedAt: envelope.editedAt,
-            localDigest: canonicalWholeRecordDigest("parcel_handoff", envelope.lifecycle, payload, now),
+            noteText: remoteNote,
+            localDigest: canonicalWholeRecordDigest("parcel_handoff", completedAt > 0 ? "history" : "active", payload, now),
           };
           continue;
         }
@@ -2391,21 +2534,18 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           platform,
           code,
           capturedAtMs: capturedAt,
-          ...(windowStartAt > 0 ? { windowStartAtMs: windowStartAt } : {}),
-          ...(windowEndAt > 0 ? { windowEndAtMs: windowEndAt } : {}),
-          ...(windowText ? { windowText } : {}),
+          ...(mergedWinStart > 0 ? { windowStartAtMs: mergedWinStart } : {}),
+          ...(mergedWinEnd > 0 ? { windowEndAtMs: mergedWinEnd } : {}),
+          ...(mergedWinText ? { windowText: mergedWinText } : {}),
           ...(existingItem?.providerTitle ? { providerTitle: existingItem.providerTitle } : {}),
-          ...(completedAt > 0
-            ? { completedAtMs: completedAt }
-            : existingItem?.completedAtMs
-              ? { completedAtMs: existingItem.completedAtMs }
-              : {}),
-          ...(expiresAt > 0 && expiresAt <= now && !completedAt
-            ? { expiredAtMs: expiresAt }
-            : existingItem?.expiredAtMs
+          ...(mergedCompletedAt > 0 ? { completedAtMs: mergedCompletedAt } : {}),
+          ...(mergedExpires > 0 && mergedExpires <= now && !mergedCompletedAt
+            ? { expiredAtMs: mergedExpires }
+            : !mergedCompletedAt && existingItem?.expiredAtMs
               ? { expiredAtMs: existingItem.expiredAtMs }
               : {}),
-          ...(note !== undefined ? (note ? { note } : {}) : existingItem?.note ? { note: existingItem.note } : {}),
+          ...(mergedNote ? { note: mergedNote } : {}),
+          ...(mergedEditedAtMs ? { editedAtMs: mergedEditedAtMs } : {}),
         };
         if (matchIndex >= 0) {
           if (JSON.stringify(pickupRecords[matchIndex]) !== JSON.stringify(mergedHandoff)) {
@@ -2421,7 +2561,8 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           type: "parcel_handoff",
           localKey: `code:${localId}`,
           editedAt: envelope.editedAt,
-          localDigest: canonicalWholeRecordDigest("parcel_handoff", envelope.lifecycle, payload, now),
+          noteText: remoteNote,
+          localDigest: canonicalWholeRecordDigest("parcel_handoff", completedAt > 0 ? "history" : "active", payload, now),
         };
       }
     }
@@ -2604,12 +2745,20 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
       cloudState.quarantined,
       now,
     );
+    const nextQuarantineHistory: Record<string, ParcelQuarantineHistoryEntry> = normalizeQuarantineHistoryEntries(
+      cloudState.quarantineHistory,
+    );
     const isQuarantinedDigest = (recordId: string, digest: string): boolean => {
       const entry = nextQuarantined[recordId];
       if (!entry) return false;
-      if (entry.expiresAtMs <= now) {
+      if (!entry.permanent && (entry.expiresAtMs === undefined || entry.expiresAtMs <= now)) {
         delete nextQuarantined[recordId];
         return false;
+      }
+      if (entry.digest === "*") {
+        nextQuarantined[recordId] = { digest, permanent: true };
+        nextQuarantineHistory[recordId] = { digest, rejections: PARCEL_CLOUD_QUARANTINE_MAX_REJECTIONS };
+        return true;
       }
       return entry.digest === digest;
     };
@@ -2634,6 +2783,9 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           return;
         }
         if (nextQuarantined[recordId]) delete nextQuarantined[recordId];
+        if (nextQuarantineHistory[recordId] && nextQuarantineHistory[recordId]!.digest !== qDigest) {
+          delete nextQuarantineHistory[recordId];
+        }
         const effectiveEditedAt = Math.min(now, Math.max(1, editedAt, cloud.editedAt + 1));
         const existing = nextEdits[recordId];
         if (existing?.deleted && existing.editedAt >= effectiveEditedAt) return;
@@ -2655,6 +2807,9 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
         return;
       }
       if (nextQuarantined[recordId]) delete nextQuarantined[recordId];
+      if (nextQuarantineHistory[recordId] && nextQuarantineHistory[recordId]!.digest !== qDigest) {
+        delete nextQuarantineHistory[recordId];
+      }
       const wholeRecordType = isWholeRecordType(type);
       if (cloud && !cloud.deleted && cloud.type === type) {
         if (isCloudRecordSemanticallyConverged(cloud, type, lifecycle, payload, editedAt, now)) {
@@ -3091,6 +3246,7 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
 
       if (record.kind === "pickup") {
         const completedAt = record.completedAtMs && record.completedAtMs > 0 ? Math.min(now, Math.trunc(record.completedAtMs)) : 0;
+        const userEditedAt = record.editedAtMs && record.editedAtMs > 0 ? Math.min(now, Math.trunc(record.editedAtMs)) : 0;
         const location = [record.locationName, record.address].filter(Boolean).join(" ").trim();
         const lifecycle = completedAt > 0 ? "history" : "active";
         const payload: Record<string, unknown> = {
@@ -3117,10 +3273,10 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           completedAt > 0 ? capturedAt : 0,
           payload,
           localChangedSinceSync
-            ? now
+            ? (userEditedAt || now)
             : syncedSameRevision
-              ? Math.max(capturedAt, completedAt, existingRemote?.editedAt ?? 0)
-              : Math.max(capturedAt, completedAt),
+              ? Math.max(capturedAt, completedAt, userEditedAt, existingRemote?.editedAt ?? 0)
+              : Math.max(capturedAt, completedAt, userEditedAt),
         );
       } else {
         const windowEndAt = record.windowEndAtMs && record.windowEndAtMs > 0 ? Math.trunc(record.windowEndAtMs) : 0;
@@ -3132,6 +3288,7 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
         const completedAt = rawCompletedAt > 0
           ? (expiresAt > 0 && rawCompletedAt >= expiresAt ? Math.max(1, expiresAt - 1) : rawCompletedAt)
           : 0;
+        const userEditedAt = record.editedAtMs && record.editedAtMs > 0 ? Math.min(now, Math.trunc(record.editedAtMs)) : 0;
         const deadline = parcelHandoffDeadline(record);
         const historic = completedAt > 0 || (expiresAt > 0 && expiresAt <= now) || Boolean(deadline !== undefined && deadline <= now && expiresAt > 0);
         const lifecycle = historic ? "history" : "active";
@@ -3146,15 +3303,16 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           ...(completedAt > 0 ? { completedAt } : {}),
           ...(noteField !== undefined ? { note: noteField } : {}),
         };
-        const currentDigest = canonicalWholeRecordDigest("parcel_handoff", lifecycle, payload, now);
+        const userDigest = canonicalWholeRecordDigest("parcel_handoff", completedAt > 0 ? "history" : "active", payload, now);
         const localChangedSinceSync = Boolean(
           syncedSameRevision &&
           previousSynced[recordId]?.localDigest !== undefined &&
-          previousSynced[recordId]!.localDigest !== currentDigest,
+          previousSynced[recordId]!.localDigest !== userDigest,
         );
         if (!localChangedSinceSync && syncedSameRevision && existingRemote) {
-          nextSynced[recordId] = { ...nextSynced[recordId]!, localDigest: currentDigest };
+          nextSynced[recordId] = { ...nextSynced[recordId]!, localDigest: userDigest };
         }
+        const passiveExpiryAt = completedAt === 0 && historic && expiresAt > 0 ? Math.min(now, expiresAt) : 0;
         enqueueEdit(
           recordId,
           "parcel_handoff",
@@ -3162,10 +3320,10 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           historic ? capturedAt : 0,
           payload,
           localChangedSinceSync
-            ? now
+            ? (userEditedAt || now)
             : syncedSameRevision
-              ? Math.max(capturedAt, completedAt, existingRemote?.editedAt ?? 0)
-              : Math.max(capturedAt, completedAt),
+              ? Math.max(capturedAt, completedAt, userEditedAt, passiveExpiryAt, existingRemote?.editedAt ?? 0)
+              : Math.max(capturedAt, completedAt, userEditedAt, passiveExpiryAt),
         );
       }
     }
@@ -3222,6 +3380,7 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
       pddLinks: nextPddLinks,
       legacyManualTitleCleaned: true,
       ...(Object.keys(nextQuarantined).length ? { quarantined: nextQuarantined } : { quarantined: undefined }),
+      ...(Object.keys(nextQuarantineHistory).length ? { quarantineHistory: nextQuarantineHistory } : { quarantineHistory: undefined }),
     };
   });
   if (stateChanged) {

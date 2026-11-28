@@ -34,7 +34,13 @@ public final class DeliveriesApp extends Application {
                 ExpressRepository repository = ExpressRepository.get(this);
                 repository.runPendingMigrations();
                 repository.pruneExpiredShipmentsIfDue();
-                me.pipi.deliveries.notification.PromotedNotificationPublisher.reconcilePendingNowBarProbes(this);
+                try {
+                    me.pipi.deliveries.notification.PromotedNotificationPublisher
+                            .reconcilePendingNowBarProbes(this);
+                } catch (Throwable probeFailure) {
+                    Log.w(TAG, "Now Bar probe reconciliation failed kind="
+                            + probeFailure.getClass().getSimpleName());
+                }
                 repository.reconcileLiveNotifications();
                 repository.replayPendingNotifications();
             } catch (Throwable failure) {

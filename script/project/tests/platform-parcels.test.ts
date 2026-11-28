@@ -282,8 +282,11 @@ test("ETA keeps the first observation and disappears after the expected day or p
   assert.equal(first.platformFields?.estimate?.capturedAtMs, NOW);
   assert.equal(repeated.platformFields?.estimate?.capturedAtMs, NOW);
   assert.deepEqual(displayedPlatformFields(repeated, NOW + 86_400_000), {
-    title: "示例商品", estimate: "预计9月9日送达",
+    title: "示例商品", estimate: "预计今天送达",
   });
+  assert.equal(displayDeliveryEstimate("预计9月8日15:00-21:00送达", NOW, NOW), "预计今天15:00-21:00送达");
+  assert.equal(displayDeliveryEstimate("预计9月9日09:00-12:00送达", NOW, NOW), "预计明天09:00-12:00送达");
+  assert.equal(displayDeliveryEstimate("预计后天送达", NOW, NOW), "预计9月10日送达");
   assert.equal(displayDeliveryEstimate("预计明天送达", NOW, NOW + 2 * 86_400_000), "");
   assert.equal(displayedPlatformFields({ ...repeated, timeline: shipment().timeline }, NOW).estimate, "");
 });
@@ -293,7 +296,7 @@ test("cloud metadata fills same-parcel gaps with its original observation and pr
   const metadata = { waybill, productName: "示例云商品", anchorAt: NOW - 3_600_000,
     deliveryEstimate: "预计明天送达", deliveryEstimateObservedAt: NOW - 86_400_000 };
   assert.deepEqual(displayedPlatformFields(moving, NOW, metadata), {
-    title: "示例云商品", estimate: "预计9月8日送达",
+    title: "示例云商品", estimate: "预计今天送达",
   });
   const manual = { ...moving, platformFields: {
     waybill, waybillGeneration: 0, manualTitle: "示例手动名称",
@@ -716,7 +719,7 @@ test("opening a retained detail reads only its CaiNiao parcel and leaves the acc
     elapsed = 3_600_000;
     const second = await refreshParcelDetailFields(update.shipment, () => true);
     assert.ok(second);
-    assert.equal(displayedPlatformFields(second.shipment, NOW + elapsed).estimate, "预计后天送达");
+    assert.equal(displayedPlatformFields(second.shipment, NOW + elapsed).estimate, "预计9月10日送达");
     assert.equal(second.shipment.platformFields?.cainiaoImage?.url, update.shipment.platformFields?.cainiaoImage?.url);
     assert.equal(fetched.mock.callCount(), 2);
     assert.equal(accountStatus("cainiao").syncedAtMs, priorSync);

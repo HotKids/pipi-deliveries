@@ -26,7 +26,7 @@ const state = commitWatchSnapshot(inbound);
 const [visible] = visibleShipments(state);
 assert.equal(visible.identity.id, row.identity.id);
 assert.equal(loadWidgetSnapshot().rows[0].shipmentId, row.identity.id);
-assert.equal(displayedPlatformFields(visible).estimate, estimate);
+assert.equal(displayedPlatformFields(visible).estimate, "预计明天送达");
 
 setShipmentNote(visible, "Test note");
 setShipmentProductName(visible, "Test title");

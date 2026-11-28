@@ -533,6 +533,8 @@ function isCanonicalMigratedState(
 const WATCH_FEEDBACK_MAX = 256;
 const CLOUD_PDD_TOMBSTONE_MAX = 256;
 const CLOUD_PDD_TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+export const IGNORED_CLOUD_MANUAL_WAYBILL_MAX = 2048;
+export const IGNORED_CLOUD_MANUAL_WAYBILL_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 const PICKUP_CODE_HISTORY_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const PICKUP_CODE_HISTORY_MAX = 500;
 
@@ -662,7 +664,7 @@ function normalizeIgnoredCloudManualWaybills(
       ? Math.trunc(rawIgnoredAtMs)
       : (anchorAt > 0 ? anchorAt : now);
     if (!waybill || ignoredAtMs <= 0) continue;
-    if (now - ignoredAtMs > CLOUD_PDD_TOMBSTONE_TTL_MS) continue;
+    if (now - ignoredAtMs > IGNORED_CLOUD_MANUAL_WAYBILL_TTL_MS) continue;
     const key = `${waybill}\u0000${anchorAt}`;
     const existing = byKey.get(key);
     if (!existing || ignoredAtMs >= existing.ignoredAtMs) {
@@ -671,7 +673,42 @@ function normalizeIgnoredCloudManualWaybills(
   }
   return [...byKey.values()]
     .sort((left, right) => right.ignoredAtMs - left.ignoredAtMs)
-    .slice(0, CLOUD_PDD_TOMBSTONE_MAX);
+    .slice(0, IGNORED_CLOUD_MANUAL_WAYBILL_MAX);
+}
+
+function collectPrunedSignedManualIgnores(
+  beforeRetention: readonly Shipment[],
+  afterRetention: readonly Shipment[],
+  now: number,
+): IgnoredCloudManualWaybill[] {
+  const retainedIds = new Set(afterRetention.map((shipment) => shipment.identity.id));
+  const entries: IgnoredCloudManualWaybill[] = [];
+  for (const shipment of beforeRetention) {
+    if (retainedIds.has(shipment.identity.id)) continue;
+    if (
+      !shipment.identity.manuallyAdded ||
+      shipment.cloudExpressOrigin ||
+      shipment.pddCloudOrigin ||
+      shipment.pddImport ||
+      internationalShipment(shipment) ||
+      shipment.timeline.semantic !== "COMPLETED"
+    ) {
+      continue;
+    }
+    const settledAtMs = signedRetentionAtMs(shipment, now);
+    if (!settledAtMs || now - settledAtMs < EXPRESS_POLICY.retention.signedDeletionMs) continue;
+    const waybill = normalizeWaybill(displayWaybill(shipment));
+    if (!waybill) continue;
+    entries.push({
+      waybill,
+      anchorAt: Math.max(
+        0,
+        Math.trunc(shipmentReuseAnchorAtMs(shipment, now) || Number(shipment.identity.createdAtMs) || settledAtMs),
+      ),
+      ignoredAtMs: now,
+    });
+  }
+  return entries;
 }
 
 function upsertIgnoredCloudManualWaybillEntry(
@@ -714,23 +751,25 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
   const splitShipments = alreadyClearedManualCloudImported
     ? split.shipments
     : split.shipments.map(stripLegacyManualCloudImported);
-  const retainedShipments = pruneExpiredManualPlaceholders(
-    retainDurableShipments(
-      applyEmptyTimelineRetirements(withWaybillOwnership(
-        null,
-        splitShipments
-          .map((shipment) => normalizeShipmentAuthorities(shipment, now))
-          .map((shipment) => feedSlotRebuiltAtMs ? shipment : markFeedSlotRebuild(shipment)),
-        now,
-        (shipment) => normalizeShipmentAuthorities(shipment, now),
-      ), emptyTimelineRetirements, now),
-      now,
-    ),
+  const preRetentionShipments = applyEmptyTimelineRetirements(withWaybillOwnership(
+    null,
+    splitShipments
+      .map((shipment) => normalizeShipmentAuthorities(shipment, now))
+      .map((shipment) => feedSlotRebuiltAtMs ? shipment : markFeedSlotRebuild(shipment)),
     now,
-  );
+    (shipment) => normalizeShipmentAuthorities(shipment, now),
+  ), emptyTimelineRetirements, now);
+  const durableShipments = retainDurableShipments(preRetentionShipments, now);
+  const prunedManualIgnores = collectPrunedSignedManualIgnores(preRetentionShipments, durableShipments, now);
+  const retainedShipments = pruneExpiredManualPlaceholders(durableShipments, now);
   const watchFeedback = normalizeWatchFeedback(base.watchFeedback);
   const cloudPddTombstones = normalizeCloudPddTombstones(base.cloudPddTombstones, now);
-  const ignoredCloudManualWaybills = normalizeIgnoredCloudManualWaybills(base.ignoredCloudManualWaybills, now);
+  const ignoredCloudManualWaybills = normalizeIgnoredCloudManualWaybills(
+    prunedManualIgnores.length
+      ? [...(base.ignoredCloudManualWaybills ?? []), ...prunedManualIgnores]
+      : base.ignoredCloudManualWaybills,
+    now,
+  );
   return {
     version: 2,
     revision: base.revision,
@@ -3108,7 +3147,7 @@ export function setPickupCardNote(
     }
     const trimmed = note.trim();
     if (trimmed === previousNote) return state;
-    const next = records.map((item) => item === record ? { ...record, note: trimmed || undefined } : item);
+    const next = records.map((item) => item === record ? { ...record, note: trimmed || undefined, editedAtMs: now } : item);
     return saveStateAndPrune(state, now, {}, state, next).state;
   });
 }
@@ -3129,8 +3168,9 @@ export function setParcelHandoffWindow(
     }
     if (window && (!window.every(time => Number.isSafeInteger(time) && time > 0) || window[1] < window[0] ||
         window[1] + 3_600_000 <= now)) throw new RangeError("Invalid active handoff window");
-    const next = { ...current, windowStartAtMs: window?.[0], windowEndAtMs: window?.[1], windowText: undefined };
-    if (JSON.stringify(next) === JSON.stringify(current)) return state;
+    const candidate = { ...current, windowStartAtMs: window?.[0], windowEndAtMs: window?.[1], windowText: undefined };
+    if (JSON.stringify(candidate) === JSON.stringify(current)) return state;
+    const next = { ...candidate, editedAtMs: now };
     return saveStateAndPrune(state, now, {}, state, records.map(record => record === current ? next : record)).state;
   });
 }
@@ -3168,6 +3208,7 @@ export function savePlatformParcelData(input: {
         locationName: parcel.name || current?.locationName,
         address: parcel.address || current?.address,
         ...(current?.note ? { note: current.note } : {}),
+        ...(current?.editedAtMs ? { editedAtMs: current.editedAtMs } : {}),
       };
       if (stableJson(next) !== stableJson(current ?? null)) {
         records.set(id, next);
@@ -3299,6 +3340,7 @@ export function savePlatformParcelData(input: {
         ...record, ...preservedWindow, capturedAtMs: saved?.capturedAtMs || record.capturedAtMs,
         providerTitle: record.providerTitle || saved?.providerTitle,
         ...(saved?.note ? { note: saved.note } : {}),
+        ...(saved?.editedAtMs ? { editedAtMs: saved.editedAtMs } : {}),
       };
       const deadline = parcelHandoffDeadline(next);
       const timed = deadline !== undefined && now >= deadline ? { ...next, expiredAtMs: deadline } : next;
@@ -3426,11 +3468,12 @@ function saveStateAndPrune(
     (shipment) => normalizeShipmentAuthorities(shipment, now),
   );
   // Hidden signed rows retain all source authority until their deletion cutoff.
-  const retainedShipments = pruneExpiredManualPlaceholders(
-    retainDurableShipments(applyEmptyTimelineRetirements(
-      normalizedShipments, emptyTimelineRetirements, now), now),
-    now,
+  const preRetentionShipments = applyEmptyTimelineRetirements(
+    normalizedShipments, emptyTimelineRetirements, now,
   );
+  const durableShipments = retainDurableShipments(preRetentionShipments, now);
+  const prunedManualIgnores = collectPrunedSignedManualIgnores(preRetentionShipments, durableShipments, now);
+  const retainedShipments = pruneExpiredManualPlaceholders(durableShipments, now);
   // D245 (D237): the rows this commit deleted by retention and the rows kept hidden, recorded after the commit.
   const retentionRemoved = normalizedShipments.length - retainedShipments.length;
   // Counted only while recording is on, so a commit without diagnostics does no extra pass over its rows.
@@ -3495,8 +3538,11 @@ function saveStateAndPrune(
       if (w) manuallyReaddedWaybills.add(w);
     }
   }
+  const baseIgnoredManualWaybills = candidate.ignoredCloudManualWaybills ?? previous.ignoredCloudManualWaybills;
   const savedIgnoredCloudManualWaybills = normalizeIgnoredCloudManualWaybills(
-    candidate.ignoredCloudManualWaybills ?? previous.ignoredCloudManualWaybills,
+    prunedManualIgnores.length
+      ? [...(baseIgnoredManualWaybills ?? []), ...prunedManualIgnores]
+      : baseIgnoredManualWaybills,
     now,
   ).filter((entry) => !manuallyReaddedWaybills.has(entry.waybill));
   const next: AppState = {

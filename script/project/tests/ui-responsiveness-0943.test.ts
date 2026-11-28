@@ -13,6 +13,7 @@ import { cainiaoParcelDetails, cainiaoRecipientParcels } from "../services/platf
 import { fetchJdParcelDetails, fetchJdParcels, fetchPddOrders } from "../services/platform-web-parcels";
 import { registerProjectionViewportHost } from "../services/projection-viewport";
 import { listHeadline, shipmentPresentationStatus, statusTextTint } from "../services/status";
+import { sameShipmentItemList, sameShipmentRowPresentation } from "../services/ui-state";
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(resolve(projectDir, rel), "utf8");
@@ -282,21 +283,9 @@ test("HomePage scopes swipe flags per ID, reuses unchanged row items & buckets, 
   const homeSource = read("pages/HomePage.tsx");
   const appSource = read("index.tsx");
 
-  // Evaluate sameShipmentRowPresentation & sameShipmentItemList directly from HomePage.tsx
-  const start = homeSource.indexOf("type ShipmentListItem =");
-  const end = homeSource.indexOf("export function HomePage(");
-  assert.ok(start >= 0 && end > start);
-  const helpers = runInNewContext(
-    `${stripTypeScriptTypes(homeSource.slice(start, end))}\n({ sameShipmentRowPresentation, sameShipmentItemList })`,
-    {
-      displayWaybill: (row: any) => row.timeline.waybill || row.identity.sourceId,
-      listHeadline,
-      shipmentPresentationStatus,
-      statusTextTint,
-    },
-  ) as {
-    sameShipmentRowPresentation: (a: any, b: any) => boolean;
-    sameShipmentItemList: (a: any[] | undefined, b: any[]) => boolean;
+  const helpers = {
+    sameShipmentRowPresentation,
+    sameShipmentItemList,
   };
 
   const baseRow = {

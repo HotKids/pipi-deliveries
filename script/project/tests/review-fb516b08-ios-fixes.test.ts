@@ -34,8 +34,11 @@ const { saveGatewayToken } = await import("../services/credentials.ts");
 const { GatewayError } = await import("../services/gateway.ts");
 const { mealCredentialScope } = await import("../services/meal/rules.ts");
 const { createPickupRuntime } = await import("../services/meal/pickup-runtime.ts");
-const { onlineMealRequiresQR, recognizeMealImage, recognizeMealText } = await import("../services/meal/recognize.ts");
+const { resolvePickupVisualStyle } = await import("../services/meal/pickup-artwork.ts");
+const { mealFromModel, onlineMealRequiresQR, recognizeMealImage, recognizeMealText } = await import("../services/meal/recognize.ts");
+const { currentMeal, putMealObservations, readMeals } = await import("../services/meal/records.ts");
 const {
+  PARCEL_CLOUD_QUARANTINE_MAX_REJECTIONS,
   PARCEL_CLOUD_QUARANTINE_TTL_MS,
   dropRejectedParcelBatch,
   isClockSkewMutationRejection,
@@ -47,20 +50,28 @@ const {
   resetParcelCloudDeniedBackoffForTests,
   synchronizeParcelCloudRecords,
 } = await import("../services/parcel-cloud-sync.ts");
+const { activePickupCards } = await import("../services/parcel-pickup.ts");
+const { normalizeRecognizedPickupCode, recognizeParcelCodes } = await import("../services/parcel-code-ocr.ts");
+const { isParcelWaybill, parcelImageRows, parcelTextRows } = await import("../services/parcel-waybill-ocr.ts");
 const { displayedPlatformFields } = await import("../services/platform-parcel-merge.ts");
 const { refreshPlatformParcels } = await import("../services/platform-parcel-sync.ts");
 const { clearPlatformLogin, platformSession, savePlatformLogin } = await import("../services/platform-accounts.ts");
 const { resetJdEstimateCooldownsForTests } = await import("../services/platform-web-parcels.ts");
 const { registerProjectionViewportHost } = await import("../services/projection-viewport.ts");
 const { displayWaybill } = await import("../services/shipment-policy.ts");
-const { listHeadline, shipmentPresentationStatus, statusTextTint } = await import("../services/status.ts");
+const { normalizeWaybill, shipmentPresentationStatus } = await import("../services/status.ts");
+const { sameShipmentRowPresentation, selectForegroundShipmentsProjection } = await import("../services/ui-state.ts");
 const {
+  IGNORED_CLOUD_MANUAL_WAYBILL_MAX,
+  IGNORED_CLOUD_MANUAL_WAYBILL_TTL_MS,
   emptyState,
+  expireDueParcelHandoffs,
   forceCompleteShipment,
   loadState,
   removeShipmentWithCleanup,
   saveRecognizedParcelCode,
   saveState,
+  setPickupCardNote,
   setShipmentNote,
   upsertPendingQuery,
   upsertShipment,
@@ -713,26 +724,9 @@ test("I2-3: HTTP 401 expired_request retains in-flight batch and queued edits fo
 
 test("I2-4 / R10: root foreground projection and HomePage row equality detect structured status changes with unchanged headline and time", () => {
   const rawIndexSrc = readFileSync(new URL("../index.tsx", import.meta.url), "utf8");
-  const projStart = rawIndexSrc.indexOf("function sameForegroundShipmentProjection(");
-  const projEnd = rawIndexSrc.indexOf("function usePickupTabState(");
-  const projCode = stripTypeScriptTypes(rawIndexSrc.slice(projStart, projEnd), { mode: "transform" })
-    .replace(/^export /gm, "");
-  const rootHelpers = runInNewContext(
-    `${projCode}\n;({ selectForegroundShipmentsProjection });`,
-    { displayWaybill, listHeadline, shipmentPresentationStatus, statusTextTint },
-  ) as {
-    selectForegroundShipmentsProjection: (prev: readonly Shipment[], next: readonly Shipment[]) => readonly Shipment[];
-  };
-
   const homeSource = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
-  const homeStart = homeSource.indexOf("type ShipmentListItem =");
-  const homeEnd = homeSource.indexOf("export function HomePage(");
-  const homeHelpers = runInNewContext(
-    `${stripTypeScriptTypes(homeSource.slice(homeStart, homeEnd))}\n({ sameShipmentRowPresentation })`,
-    { displayWaybill, listHeadline, shipmentPresentationStatus, statusTextTint },
-  ) as {
-    sameShipmentRowPresentation: (left: Shipment, right: Shipment) => boolean;
-  };
+  assert.match(rawIndexSrc, /selectForegroundShipmentsProjection/);
+  assert.match(homeSource, /sameShipmentRowPresentation/);
 
   const withNormalized = (
     semantic: Shipment["timeline"]["semantic"],
@@ -822,11 +816,11 @@ test("I2-4 / R10: root foreground projection and HomePage row equality detect st
 
   for (const [label, before, after] of transitions) {
     assert.notEqual(shipmentPresentationStatus(before).text, shipmentPresentationStatus(after).text, label);
-    assert.equal(homeHelpers.sameShipmentRowPresentation(before, after), false, `HomePage detects ${label}`);
+    assert.equal(sameShipmentRowPresentation(before, after), false, `HomePage detects ${label}`);
     const prevList = [before];
     const nextList = [after];
     assert.equal(
-      rootHelpers.selectForegroundShipmentsProjection(prevList, nextList),
+      selectForegroundShipmentsProjection(prevList, nextList),
       nextList,
       `root foreground projection publishes ${label}`,
     );
@@ -1049,3 +1043,771 @@ test("I2-11: JD delivery-estimate network interception ignores recommendation en
     registerProjectionViewportHost(null);
   }
 });
+
+test("I6-1 & I2-5 empty-OCR loophole: QR redemption cues only gate redemption-configured brands, and empty/failed OCR on 茶颜悦色 fails closed", async () => {
+  const scope = resetEnv();
+  const raw = JSON.parse(readFileSync(new URL("../../../pickup-rules.json", import.meta.url), "utf8"));
+  const rules = { raw, parsed: createPickupRuntime(raw) };
+  const width = 1179, height = 1050;
+  const makeCandidates = (rows: readonly [string, number][]) =>
+    rows.map(([content, top]) => ({
+      content,
+      boundingBox: { x: 30 / width, y: 1 - (top + 30) / height, width: 600 / width, height: 30 / height },
+    }));
+
+  // 1) All 6 unified cues trigger QR requirement on redemption-configured 茶颜悦色
+  for (const cue of ["待扫码核销", "扫码核销", "请出示二维码", "出示二维码", "核销二维码", "请扫码核销"]) {
+    assert.equal(
+      onlineMealRequiresQR(
+        { brand: "茶颜悦色", pickupCode: "88", productName: "幽兰拿铁" },
+        rules,
+        makeCandidates([[cue, 60]]),
+      ),
+      true,
+      `redemption brand 茶颜悦色 requires QR on cue "${cue}"`,
+    );
+  }
+
+  // 2) McDonald's & non-redemption brand pages with QR cue text or model status preserve BOTH pickupCode "1234" AND productName "巨无霸套餐"
+  const nonRedemptionImage = {
+    width: 400,
+    height: 800,
+    scale: 1,
+    // QRCode.parseImage fallback: no QR needed or present
+  } as unknown as UIImage;
+  const prevQRCode = (globalThis as Record<string, unknown>).QRCode;
+  Object.assign(globalThis, { QRCode: { parseImage: async () => "" } });
+  try {
+    const mcdModel = {
+      brand: "麦当劳",
+      pickupCode: "1234",
+      merchantName: "麦当劳深圳南山餐厅",
+      productName: "巨无霸套餐",
+    };
+    for (const [label, fields, screenRows] of [
+      ["screen 请出示二维码或取餐码取餐", mcdModel, [["麦当劳", 40], ["请出示二维码或取餐码取餐", 120]] as [string, number][]],
+      ["screen 扫码核销后取餐", mcdModel, [["扫码核销后取餐", 120]] as [string, number][]],
+      ["model status 请出示二维码取餐", { ...mcdModel, status: "请出示二维码取餐" }, [["取餐号 1234", 120]] as [string, number][]],
+      [
+        "generic non-redemption brand with 请出示二维码或取餐码取餐",
+        { brand: "老乡鸡", pickupCode: "1234", productName: "巨无霸套餐", status: "请出示二维码取餐" },
+        [["请出示二维码或取餐码取餐", 120], ["扫码核销后取餐", 180]] as [string, number][],
+      ],
+    ] as const) {
+      const cands = makeCandidates(screenRows);
+      assert.equal(onlineMealRequiresQR(fields, rules, cands), false, `I6-1 (${label}): onlineMealRequiresQR is false`);
+      const textRes = recognizeMealText(cands, width, height, NOW, [], rules, fields);
+      assert.equal(textRes.meals[0]?.payload.code, "1234", `I6-1 (${label}): recognizeMealText preserves pickupCode`);
+      assert.equal(textRes.meals[0]?.payload.productName, "巨无霸套餐", `I6-1 (${label}): recognizeMealText preserves productName`);
+      const imgRes = await recognizeMealImage(nonRedemptionImage, cands, NOW, rules, fields);
+      assert.equal(imgRes.meals[0]?.payload.code, "1234", `I6-1 (${label}): recognizeMealImage preserves pickupCode`);
+      assert.equal(imgRes.meals[0]?.payload.productName, "巨无霸套餐", `I6-1 (${label}): recognizeMealImage preserves productName`);
+    }
+
+    // 3) Full intent.tsx shortcut execution:
+    //    (a) McDonald's with status "请出示二维码取餐" saves pickupCode "1234" + productName "巨无霸套餐"
+    //    (b) 茶颜悦色 with pickupCode "88" (no QR, no ...小主 evidence) + empty Vision OCR OR failed Vision OCR fails closed (saves 0 meals!)
+    const executable = (name: string) =>
+      stripTypeScriptTypes(readFileSync(new URL(`../${name}`, import.meta.url), "utf8"), { mode: "transform" })
+        .replace(/^import[\s\S]*?;\n/gm, "")
+        .replace(/^export /gm, "");
+    const intentSource = [executable("services/shortcut-capture.ts"), executable("intent.tsx")]
+      .join("\n")
+      .replace(/void run\(\);\s*$/, "run();");
+
+    const runShortcutOnline = async (opts: {
+      onlineFields: Record<string, unknown>;
+      visionResult: "empty" | "throw" | readonly [string, number][];
+    }) => {
+      const savedObservations: Array<{ payload: { code: string; productName?: string; brandId: string } }> = [];
+      let exitMessage = "";
+      await runInNewContext(intentSource, {
+        Date,
+        Math,
+        Number,
+        String,
+        Boolean,
+        Array,
+        Object,
+        Set,
+        Map,
+        Promise,
+        URL,
+        Error,
+        RegExp,
+        beginDiagnosticOperation: () => () => {},
+        writeRuntimeCapabilities: () => {},
+        diagnosticErrorDetails: () => ({}),
+        writeDiagnostic: () => {},
+        flushDiagnostics: () => {},
+        Intent: {
+          shortcutParameter: { type: "fileURL", value: "/synthetic/screen.png" },
+          text: (v: string) => v,
+        },
+        Script: { exit: (v: string) => { exitMessage = v; } },
+        Device: { safeAreaInsets: { top: 0 } },
+        UIImage: {
+          fromFile: () => ({
+            width: 400,
+            height: 800,
+            scale: 1,
+          }),
+        },
+        Vision: {
+          recognizeText: async () => {
+            if (opts.visionResult === "throw") throw new Error("synthetic Vision OCR failure");
+            if (opts.visionResult === "empty") return { candidates: [] };
+            return { candidates: makeCandidates(opts.visionResult) };
+          },
+        },
+        UUID: { string: () => randomUUID() },
+        ONLINE_BUDGET_MS: 25_000,
+        recognitionOperation: () => ({ mode: "online", config: {}, isCurrent: () => true }),
+        onlineRecognitionIdentity: () => ({ onlineProvider: "gemini" }),
+        requestOnlineRecognition: async () => ({ family: "pickup", fields: opts.onlineFields }),
+        mealCredentialScope: () => scope,
+        ensureMealRules: async () => rules,
+        waitForRefresh: (work: unknown) => work,
+        onlineMealRequiresQR,
+        mealFromModel,
+        recognizeMealImage,
+        putMealObservations: (targetScope: string, entries: typeof savedObservations) => {
+          savedObservations.push(...entries);
+          return putMealObservations(targetScope, entries as never, true);
+        },
+        readMeals,
+        currentMeal,
+        stageLuckinDraft: () => {},
+        MEAL_SHORTCUT_RECORD_PARAMETER: "mealPickupRecord",
+        PARCEL_SHORTCUT_RECORD_PARAMETER: "parcelCodeRecord",
+        parcelCardArtwork: () => ({}),
+        notifyScreenPickupSaved: async () => "saved",
+        notifyScreenShortcutStatus: async (msg: string) => msg,
+        scheduleScreenShortcutStatus: async () => true,
+        showShortcutPickupActivities: async () => true,
+        synchronizeMeals: async () => {},
+        synchronizeParcelCloudRecords: async () => {},
+        parcelImageRows,
+        parcelTextRows,
+        recognizeParcelCodes,
+        normalizeWaybill,
+        isParcelWaybill,
+        normalizeRecognizedPickupCode,
+        independentPickupContent: () => undefined,
+        PLATFORM_ACCOUNT_NAMES: {},
+        saveRecognizedParcelCode: () => {},
+        stageShortcutLookup: () => "",
+        discardShortcutDraft: () => {},
+        submitScreenShortcut: async () => "",
+      });
+      return { savedObservations, exitMessage };
+    };
+
+    const mcdShortcut = await runShortcutOnline({
+      onlineFields: {
+        brand: "麦当劳",
+        pickupCode: "1234",
+        productName: "巨无霸套餐",
+        status: "请出示二维码取餐",
+      },
+      visionResult: [["请出示二维码或取餐码取餐", 120]],
+    });
+    assert.equal(mcdShortcut.savedObservations.length, 1);
+    assert.equal(mcdShortcut.savedObservations[0]?.payload.code, "1234");
+    assert.equal(mcdShortcut.savedObservations[0]?.payload.productName, "巨无霸套餐");
+
+    const chayanUnverified = {
+      brand: "茶颜悦色",
+      pickupCode: "88",
+      merchantName: "中电软件园D3店",
+      productName: "幽兰拿铁",
+    };
+    const emptyOcrRes = await runShortcutOnline({ onlineFields: chayanUnverified, visionResult: "empty" });
+    assert.equal(
+      emptyOcrRes.savedObservations.length,
+      0,
+      "I2-5 loophole closed: empty Vision OCR without decoded QR never saves unverified 茶颜悦色 text code",
+    );
+
+    const failedOcrRes = await runShortcutOnline({ onlineFields: chayanUnverified, visionResult: "throw" });
+    assert.equal(
+      failedOcrRes.savedObservations.length,
+      0,
+      "I2-5 loophole closed: failed Vision OCR without decoded QR fails closed and never saves unverified 茶颜悦色 text code",
+    );
+  } finally {
+    if (prevQRCode === undefined) delete (globalThis as Record<string, unknown>).QRCode;
+    else Object.assign(globalThis, { QRCode: prevQRCode });
+  }
+});
+
+test("I6-2: stripping productName never falls back to matching 冷/热 inside productName, and mealFromModel inspects screen spec when model spec is empty", () => {
+  const raw = JSON.parse(readFileSync(new URL("../../../pickup-rules.json", import.meta.url), "utf8"));
+  const rules = { raw, parsed: createPickupRuntime(raw) };
+
+  // 1) Remaining spec has neither cold nor hot (or is empty) -> neutral/undefined, NEVER "cold" from "烟火易冷"
+  for (const [productName, evidenceText] of [
+    ["烟火易冷", ""],
+    ["烟火易冷", "大杯 标准糖"],
+    ["烟火易冷", "烟火易冷\n大杯 标准糖"],
+    ["烟火易冷(大杯)", "烟火易冷（大杯） 标准糖"],
+  ] as const) {
+    const style = resolvePickupVisualStyle(raw, {
+      brandId: "chayanyuese",
+      productName,
+      evidenceText,
+    });
+    assert.equal(
+      style.drinkTemperature,
+      undefined,
+      `I6-2: productName (${productName}) with 冷 and neutral spec (${JSON.stringify(evidenceText)}) must stay neutral, not "cold"`,
+    );
+  }
+
+  // 2) Delimiter splitting (+, /, 、, ，, ,, |) and ASCII/full-width parenthesis normalization
+  for (const [prod, spec] of [
+    ["烟火易冷+幽兰拿铁", "烟火易冷 + 幽兰拿铁 热 标准糖"],
+    ["烟火易冷/幽兰拿铁", "烟火易冷/幽兰拿铁 大杯 热"],
+    ["烟火易冷、幽兰拿铁", "烟火易冷、幽兰拿铁 温"],
+    ["烟火易冷(大杯)", "烟火易冷（大杯） 热 标准糖"],
+    ["烟火易冷（大杯）", "烟火易冷(大杯) 热 标准糖"],
+  ] as const) {
+    const style = resolvePickupVisualStyle(raw, {
+      brandId: "chayanyuese",
+      productName: prod,
+      evidenceText: spec,
+    });
+    assert.equal(style.drinkTemperature, "hot", `I6-2: ${prod} + ${spec} strips product variants and detects hot`);
+  }
+
+  // 3) mealFromModel (recognize.ts:109) when model omits productSpec
+  const width = 1179, height = 1050;
+  const makeCandidates = (lines: readonly string[]) =>
+    lines.map((content, idx) => ({
+      content,
+      boundingBox: { x: 0.1, y: 0.8 - idx * 0.06, width: 0.5, height: 0.04 },
+    }));
+
+  const noSpecNoScreen = mealFromModel(
+    { brand: "茶颜悦色", pickupCode: "983", productName: "烟火易冷" },
+    NOW,
+    rules,
+  );
+  assert.equal(noSpecNoScreen?.payload.drinkTemperature, undefined, "no model spec and no screen candidates -> neutral");
+
+  const noSpecNeutralScreen = mealFromModel(
+    { brand: "茶颜悦色", pickupCode: "983", productName: "烟火易冷" },
+    NOW,
+    rules,
+    makeCandidates(["弦钰小主", "烟火易冷", "大杯 标准糖"]),
+  );
+  assert.equal(noSpecNeutralScreen?.payload.drinkTemperature, undefined, "neutral screen spec -> neutral, never cold");
+
+  const noSpecHotScreen = mealFromModel(
+    { brand: "茶颜悦色", pickupCode: "983", productName: "烟火易冷" },
+    NOW,
+    rules,
+    makeCandidates(["弦钰小主", "烟火易冷", "免核销 | 下单立取,热,标准糖"]),
+  );
+  assert.equal(noSpecHotScreen?.payload.drinkTemperature, "hot", "screen spec with 热 -> hot even when model omits productSpec");
+});
+
+test("R1 residuals: ignoredCloudManualWaybills retains 365d / 2048 and records 21-day retention-pruned local manual rows", async () => {
+  const scope = resetEnv();
+  assert.equal(IGNORED_CLOUD_MANUAL_WAYBILL_TTL_MS, 365 * 24 * 60 * 60 * 1000);
+  assert.equal(IGNORED_CLOUD_MANUAL_WAYBILL_MAX, 2048);
+
+  // 1) Retains >256 entries (up to 2048) and survives at day 200 (>90d), expiring after 365d
+  const bulkEntries = Array.from({ length: 300 }, (_, index) => ({
+    waybill: `YT990000${String(index).padStart(6, "0")}`,
+    anchorAt: clock - 10_000,
+    ignoredAtMs: clock - (index === 0 ? 366 * 86_400_000 : 200 * 86_400_000),
+  }));
+  saveState({ ...emptyState(), ignoredCloudManualWaybills: bulkEntries }, clock);
+  const afterBulk = loadState(clock).ignoredCloudManualWaybills ?? [];
+  assert.equal(afterBulk.length, 299, "retains 299 valid entries (>256) at 200 days while pruning >365d entry");
+
+  // 2) Locally-added manual row force-completed on day 0 -> pruned on day 22 by 21-day signed retention -> recorded in ignoredCloudManualWaybills
+  resetEnv();
+  const waybill = "YT8800000007001";
+  const recordId = "77777777-7777-4777-8777-000000007001";
+  const day0 = clock;
+  saveState({ ...emptyState(), shipments: [makeManualShipment(waybill)] }, day0);
+
+  // Active cloud record exists (Bot never marked it completed)
+  await pullCloudSnapshot([
+    {
+      recordId,
+      type: "express",
+      revision: 1,
+      changedAt: day0,
+      editedAt: day0,
+      deleted: false,
+      lifecycle: "active",
+      historyAt: 0,
+      payload: {
+        waybill,
+        carrierCode: "zto",
+        status: "TRANSIT",
+        createdAt: day0 - 20_000,
+        updatedAt: day0,
+      },
+    },
+  ], 10);
+
+  // User force-completes the local manual row on day 0 (stays local-only; cloud remains active)
+  forceCompleteShipment(`interface5:manual:${waybill}`, day0 + 1_000);
+  assert.equal(loadState(day0 + 1_000).shipments[0]?.cloudExpressOrigin, undefined);
+
+  // Advance clock to day 22 (past 21-day signed retention cutoff)
+  clock = day0 + 22 * 86_400_000;
+  const prunedState = loadState(clock);
+  assert.equal(prunedState.shipments.length, 0, "21-day signed retention prunes completed local manual row");
+  assert.equal(
+    prunedState.ignoredCloudManualWaybills?.some((e) => e.waybill === waybill),
+    true,
+    "21-day retention records pruned local manual row in ignoredCloudManualWaybills",
+  );
+
+  // Cloud record advances revision on day 22 -> must NOT re-import as cloudExpressOrigin!
+  await pullCloudDelta([
+    {
+      recordId,
+      type: "express",
+      revision: 2,
+      changedAt: clock,
+      editedAt: clock,
+      deleted: false,
+      lifecycle: "active",
+      historyAt: 0,
+      payload: {
+        waybill,
+        carrierCode: "zto",
+        status: "DELIVERY",
+        createdAt: day0 - 20_000,
+        updatedAt: clock,
+      },
+    },
+  ], 15);
+  assert.equal(
+    loadState(clock).shipments.some((row) => displayWaybill(row) === waybill),
+    false,
+    "R1 residual fixed: active cloud record on day 22 does NOT resurrect retention-pruned local manual row",
+  );
+  assert.deepEqual(readParcelCloudState(scope, clock).edits, {});
+});
+
+test("I6-4: quarantined preserves legacy true/string entries on upgrade and permanently caps repeated rejections", async () => {
+  const scope = resetEnv();
+  const waybillA = "YT8800000008001";
+  const waybillB = "YT8800000008002";
+  const noteIdA = parcelDetailRecordId("parcel-note:", waybillA);
+  const noteIdB = parcelDetailRecordId("parcel-note:", waybillB);
+
+  saveState({
+    ...emptyState(),
+    shipments: [makeManualShipment(waybillA), makeManualShipment(waybillB)],
+  }, clock);
+  await pullCloudSnapshot([], 5);
+  setShipmentNote(loadState().shipments.find((s) => displayWaybill(s) === waybillA)!, "旧版布尔搁置备注", clock);
+  setShipmentNote(loadState().shipments.find((s) => displayWaybill(s) === waybillB)!, "旧版摘要搁置备注", clock);
+  reconcileParcelCloudRecordsWithLocal(scope, clock);
+
+  // Compute B's exact quarantine digest by preparing & dropping once, then simulate pre-0.9.48 persisted store
+  const snapWithEdits = readParcelCloudState(scope, clock);
+  const batchForB = prepareParcelBatch(
+    { ...snapWithEdits, batch: undefined, edits: { [noteIdB]: snapWithEdits.edits[noteIdB]! } },
+    "88888888-8888-4888-8888-000000008002",
+  );
+  const droppedB = dropRejectedParcelBatch(
+    batchForB,
+    batchForB.batch!,
+    new GatewayError("invalid_cloud_record_payload", 400, "invalid_cloud_record_payload"),
+    clock,
+  );
+  const legacyDigestB = droppedB.quarantined![noteIdB]!.digest;
+
+  // Write legacy pre-0.9.48 format: `true` for A, raw digest string for B
+  const legacySnapshot = {
+    ...snapWithEdits,
+    edits: {},
+    quarantined: {
+      [noteIdA]: true,
+      [noteIdB]: legacyDigestB,
+    },
+  };
+  memory.set(
+    "file:/group/pipi-deliveries/parcel-cloud-sync-v1.json",
+    JSON.stringify({ version: 1, scopes: { [scope]: legacySnapshot } }),
+  );
+  resetParcelCloudDeniedBackoffForTests();
+
+  // Upgrade read & reconcile must NOT trigger a mass retry of legacy quarantined entries (even days later!)
+  clock += 3 * 86_400_000;
+  reconcileParcelCloudRecordsWithLocal(scope, clock);
+  const afterUpgrade = readParcelCloudState(scope, clock);
+  assert.equal(afterUpgrade.edits[noteIdA], undefined, "legacy true quarantine stays shelved on upgrade");
+  assert.equal(afterUpgrade.edits[noteIdB], undefined, "legacy string-digest quarantine stays shelved on upgrade");
+  assert.equal(afterUpgrade.quarantined?.[noteIdA]?.permanent, true);
+  assert.equal(afterUpgrade.quarantined?.[noteIdB]?.permanent, true);
+
+  // Editing A to a new valid note unblocks A cleanly
+  clock += 1_000;
+  setShipmentNote(loadState().shipments.find((s) => displayWaybill(s) === waybillA)!, "修改后的有效备注", clock);
+  reconcileParcelCloudRecordsWithLocal(scope, clock);
+  assert.ok(readParcelCloudState(scope, clock).edits[noteIdA], "editing quarantined record to a new payload unblocks sync");
+
+  // Retry cap: 1st rejection expires after 24h; 2nd rejection of the same payload becomes permanent
+  assert.equal(PARCEL_CLOUD_QUARANTINE_MAX_REJECTIONS, 2);
+  let state1 = prepareParcelBatch(readParcelCloudState(scope, clock), "88888888-8888-4888-8888-000000008011");
+  state1 = dropRejectedParcelBatch(
+    state1,
+    state1.batch!,
+    new GatewayError("invalid_cloud_record_payload", 400, "invalid_cloud_record_payload"),
+    clock,
+  );
+  assert.equal(state1.quarantined?.[noteIdA]?.permanent, undefined, "1st rejection is transient (24h TTL)");
+  memory.set(
+    "file:/group/pipi-deliveries/parcel-cloud-sync-v1.json",
+    JSON.stringify({ version: 1, scopes: { [scope]: state1 } }),
+  );
+  resetParcelCloudDeniedBackoffForTests();
+
+  // After 24h, retries once
+  clock += PARCEL_CLOUD_QUARANTINE_TTL_MS + 1_000;
+  reconcileParcelCloudRecordsWithLocal(scope, clock);
+  let state2 = prepareParcelBatch(readParcelCloudState(scope, clock), "88888888-8888-4888-8888-000000008012");
+  assert.ok(state2.batch, "allows 1 retry after first 24h TTL");
+  state2 = dropRejectedParcelBatch(
+    state2,
+    state2.batch!,
+    new GatewayError("invalid_cloud_record_payload", 400, "invalid_cloud_record_payload"),
+    clock,
+  );
+  assert.equal(state2.quarantined?.[noteIdA]?.permanent, true, "2nd rejection caps retries permanently");
+  memory.set(
+    "file:/group/pipi-deliveries/parcel-cloud-sync-v1.json",
+    JSON.stringify({ version: 1, scopes: { [scope]: state2 } }),
+  );
+  resetParcelCloudDeniedBackoffForTests();
+
+  // Even 30 days later, permanently invalid payload never retries again
+  clock += 30 * 86_400_000;
+  reconcileParcelCloudRecordsWithLocal(scope, clock);
+  assert.equal(readParcelCloudState(scope, clock).edits[noteIdA], undefined, "permanently quarantined payload never retries daily");
+});
+
+test("I6-5: CAPTURE_JD_FORECASTS recognizes POST body functionId on fetch/XHR and does not exclude address or snapshot", async () => {
+  resetEnv();
+  const jdWaybill = "JD8800000009001";
+  const jdOrder = "2900000009001";
+  const jdShipment = makeManualShipment(jdWaybill, {
+    identity: {
+      id: `interface5:jd:${jdWaybill}`,
+      bindingSource: "interface5",
+      sourceOwner: "account:13800001234",
+      sourceId: jdOrder,
+      orderId: jdOrder,
+      accountOrder: true,
+      projectedWaybill: jdWaybill,
+      sourceProvider: "jingdong",
+      courierCode: "jd",
+      rawCourierCode: "jd",
+      companyName: "京东快递",
+      manuallyAdded: false,
+    },
+    timeline: {
+      waybill: jdWaybill,
+      courierCode: "jd",
+      companyName: "京东快递",
+      semantic: "DELIVERY",
+      latestDetail: "京东快递员正在为您派件",
+    },
+    platformFields: {
+      waybill: jdWaybill,
+      waybillGeneration: 0,
+      title: { text: "自营测试商品", source: "jingdong" },
+    },
+  });
+  saveState({ ...emptyState(), shipments: [jdShipment] }, clock);
+  savePlatformLogin("jingdong", "", { kind: "web", cookies: JD_COOKIES }, "synthetic_pin");
+
+  const originalController = globalThis.WebViewController;
+  Object.assign(globalThis, {
+    WebViewController: class {
+      injected = "";
+      url = "";
+      sandbox: Record<string, unknown> = {};
+      async setCookie() { return true; }
+      async getAllCookies() { return JD_COOKIES; }
+      async addUserScript(opts: { source: string }) {
+        this.injected = opts.source;
+        return "jd-forecast-hook";
+      }
+      async loadURL(url: string) {
+        this.url = url;
+        const parsed = new URL(url);
+        if (parsed.pathname.includes("deal_wuliu")) {
+          class FakeXHR {
+            status = 200;
+            responseType = "";
+            responseURL = "";
+            responseText = "";
+            listeners: Array<() => void> = [];
+            open(_method: string, targetUrl: string) {
+              this.responseURL = targetUrl;
+            }
+            addEventListener(event: string, cb: () => void) {
+              if (event === "load") this.listeners.push(cb);
+            }
+            send(body?: string) {
+              if (body?.includes("getHotWares") || body?.includes("adList")) {
+                this.responseText = JSON.stringify({ data: "预计明天08:00前送达" });
+              } else if (body?.includes("wuliuSnapshot")) {
+                this.responseText = JSON.stringify({
+                  snapshot: {
+                    address: {
+                      detail: "深圳市南山区",
+                      promiseTip: "预计11月29日14:00-18:00送达\n可能您还想要\n预计明天09:00送达",
+                    },
+                  },
+                });
+              }
+              for (const cb of this.listeners) cb();
+            }
+          }
+          this.sandbox = {
+            URL,
+            URLSearchParams,
+            location: parsed,
+            document: {
+              title: "订单跟踪",
+              body: {
+                innerText: `运单号：${jdWaybill}\n京东快递`,
+                querySelectorAll: () => [],
+              },
+              querySelectorAll: () => [],
+            },
+            XMLHttpRequest: FakeXHR,
+            fetch: async (reqUrl: string, init?: { method?: string; body?: string }) => {
+              const body = String(init?.body || "");
+              let payload = "{}";
+              if (body.includes("uniformRecommend") || body.includes("getAdInfo") || body.includes("hotRecommend")) {
+                payload = JSON.stringify({ promise: "预计明天10:00前送达" });
+              } else if (body.includes("orderTrackSnapshot")) {
+                payload = JSON.stringify({
+                  address: { full: "南山区科技园" },
+                  snapshot: { arrival: "预计11月29日14:00-18:00送达" },
+                  adList: [{ tip: "预计明天22:00前送达" }],
+                  hotList: [{ tip: "预计明天23:00前送达" }],
+                });
+              }
+              return {
+                ok: true,
+                url: reqUrl,
+                clone: () => ({ text: async () => payload }),
+              };
+            },
+          };
+          this.sandbox.window = this.sandbox;
+          this.sandbox.top = this.sandbox;
+          if (this.injected) {
+            runInNewContext(this.injected, this.sandbox);
+            const fetchFn = this.sandbox.fetch as (u: string, i?: unknown) => Promise<unknown>;
+            // Excluded POST functionIds must be ignored
+            await fetchFn("https://api.m.jd.com/client.action", {
+              method: "POST",
+              body: "functionId=uniformRecommend&appid=m_core",
+            });
+            await fetchFn("https://api.m.jd.com/client.action", {
+              method: "POST",
+              body: JSON.stringify({ functionId: "getAdInfo" }),
+            });
+            await fetchFn("https://api.m.jd.com/client.action", {
+              method: "POST",
+              body: "functionId=hotRecommend&appid=m_core",
+            });
+            // Valid logistics POST functionId with "snapshot" in name and "address" + "snapshot" keys in JSON
+            await fetchFn("https://api.m.jd.com/client.action", {
+              method: "POST",
+              body: "functionId=orderTrackSnapshot&appid=m_core&body=%7B%7D",
+            });
+            // Also exercise XHR POST body interception
+            const XhrCtor = this.sandbox.XMLHttpRequest as new () => FakeXHR;
+            const badXhr = new XhrCtor();
+            badXhr.open("POST", "https://api.m.jd.com/client.action");
+            badXhr.send("functionId=getHotWares");
+            const goodXhr = new XhrCtor();
+            goodXhr.open("POST", "https://api.m.jd.com/client.action");
+            goodXhr.send("functionId=wuliuSnapshot&dealId=" + jdOrder);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          return true;
+        }
+        return true;
+      }
+      async evaluateJavaScript(script: string) {
+        clock += 250;
+        if (this.url.includes("orderlist")) {
+          return { state: "ok", orders: [{ orderId: jdOrder, title: "自营测试商品", state: "等待收货" }] };
+        }
+        return runInNewContext(`(function(){${script}})()`, this.sandbox);
+      }
+      dispose() {}
+    },
+  });
+  registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+  try {
+    await refreshPlatformParcels(() => {}, "observe", "jingdong");
+    const updated = loadState().shipments[0]!;
+    assert.equal(
+      displayedPlatformFields(updated, clock).estimate,
+      "预计明天14:00-18:00送达",
+      "I6-5: POST body functionId with snapshot/address keys captures unique estimate while blocking ad/hot/recommend",
+    );
+  } finally {
+    const session = platformSession("jingdong");
+    if (session) clearPlatformLogin("jingdong", session.generation);
+    globalThis.WebViewController = originalController;
+    registerProjectionViewportHost(null);
+  }
+});
+
+test("I2-9: local handoff +4h expiry never blocks cloud +2h completion, and newer cloud completion preserves compatible offline note", async () => {
+  // Scenario 1 (§6.5 exact): handoff imported -> cloud completed at +2h -> arrives after local +4h expiry -> local record receives completedAt
+  const scope = resetEnv();
+  const handoffId = "99999999-9999-4999-8999-000000009001";
+  const t0 = clock;
+  const winStart = t0 + 3_600_000;     // +1h
+  const winEnd = t0 + 3 * 3_600_000;   // +3h -> deadline/expiresAt = +4h
+  const expiresAt = winEnd + 3_600_000; // +4h
+  const cloudCompletedAt = t0 + 2 * 3_600_000; // +2h
+
+  await pullCloudSnapshot([
+    {
+      recordId: handoffId,
+      type: "parcel_handoff",
+      revision: 1,
+      changedAt: t0,
+      editedAt: t0,
+      deleted: false,
+      lifecycle: "active",
+      historyAt: 0,
+      payload: {
+        platform: "cainiao",
+        code: "9901",
+        capturedAt: t0,
+        windowStartAt: winStart,
+        windowEndAt: winEnd,
+        windowText: "11-28 11:00–13:00 上门",
+        expiresAt,
+      },
+    },
+  ], 10);
+
+  // Advance past +4h local handoff expiry and materialize local expiredAtMs
+  clock = t0 + 4 * 3_600_000 + 5 * 60_000;
+  expireDueParcelHandoffs(clock);
+  const expiredLocal = (loadState(clock).pickupCodeRecords ?? []).find((r) => r.id === handoffId);
+  assert.equal(expiredLocal?.kind, "handoff");
+  assert.equal(expiredLocal?.kind === "handoff" ? expiredLocal.expiredAtMs : undefined, expiresAt);
+  assert.equal(expiredLocal?.completedAtMs, undefined);
+
+  // Cloud completion from +2h arrives after +4h local expiry
+  await pullCloudDelta([
+    {
+      recordId: handoffId,
+      type: "parcel_handoff",
+      revision: 2,
+      changedAt: cloudCompletedAt,
+      editedAt: cloudCompletedAt,
+      deleted: false,
+      lifecycle: "history",
+      historyAt: t0,
+      payload: {
+        platform: "cainiao",
+        code: "9901",
+        capturedAt: t0,
+        windowStartAt: winStart,
+        windowEndAt: winEnd,
+        windowText: "11-28 11:00–13:00 上门",
+        expiresAt,
+        completedAt: cloudCompletedAt,
+      },
+    },
+  ], 12);
+
+  const afterLateArrival = (loadState(clock).pickupCodeRecords ?? []).find((r) => r.id === handoffId)!;
+  assert.equal(
+    afterLateArrival.completedAtMs,
+    cloudCompletedAt,
+    "I2-9: local handoff receives cloud completedAt (+2h) even when pulled after +4h local expiry",
+  );
+  assert.equal(
+    afterLateArrival.kind === "handoff" ? afterLateArrival.expiredAtMs : undefined,
+    undefined,
+    "I2-9: completedAt clears local expiredAtMs projection",
+  );
+  assert.deepEqual(readParcelCloudState(scope, clock).edits, {}, "converged with cloud without pushing expired state back");
+
+  // Scenario 2: offline note edit at +1h + cloud completion at +2h -> adopts completedAt (+2h) AND preserves compatible offline note
+  resetEnv();
+  const pickupId = "99999999-9999-4999-8999-000000009002";
+  const baseAt = clock;
+  await pullCloudSnapshot([
+    {
+      recordId: pickupId,
+      type: "parcel_pickup",
+      revision: 1,
+      changedAt: baseAt,
+      editedAt: baseAt,
+      deleted: false,
+      lifecycle: "active",
+      historyAt: 0,
+      payload: {
+        brandId: "cainiao",
+        code: "9-9-9002",
+        location: "南山驿站",
+        capturedAt: baseAt,
+      },
+    },
+  ], 10);
+
+  // User edits note offline at +1h
+  clock = baseAt + 3_600_000;
+  const card = activePickupCards([], loadState(clock).pickupCodeRecords).find((c) => c.code === "9-9-9002")!;
+  assert.ok(card);
+  setPickupCardNote(card, "", "离线添加的兼容备注", clock);
+
+  // Another device completes in cloud at +2h (without changing note); delta arrives at +3h
+  const completedAt2h = baseAt + 2 * 3_600_000;
+  clock = baseAt + 3 * 3_600_000;
+  await pullCloudDelta([
+    {
+      recordId: pickupId,
+      type: "parcel_pickup",
+      revision: 2,
+      changedAt: completedAt2h,
+      editedAt: completedAt2h,
+      deleted: false,
+      lifecycle: "history",
+      historyAt: baseAt,
+      payload: {
+        brandId: "cainiao",
+        code: "9-9-9002",
+        location: "南山驿站",
+        capturedAt: baseAt,
+        completedAt: completedAt2h,
+      },
+    },
+  ], 12);
+
+  const mergedPickup = (loadState(clock).pickupCodeRecords ?? []).find((r) => r.id === pickupId)!;
+  assert.equal(mergedPickup.completedAtMs, completedAt2h, "I2-9: cloud completion at +2h wins over +1h offline edit");
+  assert.equal(mergedPickup.note, "离线添加的兼容备注", "I2-9: compatible offline note is preserved alongside cloud completion");
+  const queuedMerged = readParcelCloudState(scope, clock).edits[pickupId];
+  assert.equal(queuedMerged?.lifecycle, "history");
+  assert.equal(queuedMerged?.payload?.completedAt, completedAt2h);
+  assert.equal(queuedMerged?.payload?.note, "离线添加的兼容备注");
+});
+

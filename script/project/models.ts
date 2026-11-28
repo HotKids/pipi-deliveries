@@ -250,6 +250,7 @@ export type ParcelHandoffRecord = Readonly<{
   completedAtMs?: number;
   expiredAtMs?: number;
   note?: string;
+  editedAtMs?: number;
 }>;
 
 export type StandaloneParcelPickup = Readonly<{
@@ -262,6 +263,7 @@ export type StandaloneParcelPickup = Readonly<{
   address?: string;
   completedAtMs?: number;
   note?: string;
+  editedAtMs?: number;
 }>;
 
 export type PickupCodeRecord = StandaloneParcelPickup | ParcelHandoffRecord;

@@ -132,12 +132,13 @@ async function recognizeShortcutImage(rawImage: UIImage, capturedAtMs: number, n
             const meal = mealFromModel(result.fields, capturedAtMs, rules);
             if (meal) {
               const rawBrand = typeof result.fields.brand === "string" ? result.fields.brand.trim() : "";
-              const needsLocalOcrCheck = Boolean(
-                rules.parsed &&
-                ((!rawBrand && meal.payload.brandId === rules.parsed.genericBrandId) ||
-                  rules.parsed.brandsById?.get(meal.payload.brandId)?.redemption),
+              const isRedemptionBrand = Boolean(rules.parsed?.brandsById?.get(meal.payload.brandId)?.redemption);
+              const isGenericUnnamedBrand = Boolean(
+                rules.parsed && !rawBrand && meal.payload.brandId === rules.parsed.genericBrandId,
               );
-              if (needsLocalOcrCheck) {
+              if (isRedemptionBrand) {
+                onlineQR = result.fields;
+              } else if (isGenericUnnamedBrand) {
                 onlineQR = result.fields;
                 pendingOnlineMeal = meal;
               } else {
@@ -166,11 +167,18 @@ async function recognizeShortcutImage(rawImage: UIImage, capturedAtMs: number, n
     try { await scheduleScreenShortcutStatus(onlineFallbackNotice); } catch { /* Best-effort fallback toast */ }
   }
   note.stage = "vision_ocr";
-  const recognized = await waitForRefresh(Vision.recognizeText(image, {
-    recognitionLanguages: ["zh-Hans", "en"],
-    recognitionLevel: "accurate",
-    usesLanguageCorrection: false,
-  }), deadline);
+  let recognized: Awaited<ReturnType<typeof Vision.recognizeText>>;
+  try {
+    recognized = await waitForRefresh(Vision.recognizeText(image, {
+      recognitionLanguages: ["zh-Hans", "en"],
+      recognitionLevel: "accurate",
+      usesLanguageCorrection: false,
+    }), deadline);
+  } catch (error) {
+    pendingOnlineMeal = null;
+    if (!onlineQR) throw error;
+    recognized = { candidates: [] } as unknown as Awaited<ReturnType<typeof Vision.recognizeText>>;
+  }
   if (!isCurrent()) return { ...none, cancelled: true };
   const width = image.width * image.scale, height = image.height * image.scale;
   const rows = parcelImageRows(recognized.candidates, width, height);
@@ -178,7 +186,7 @@ async function recognizeShortcutImage(rawImage: UIImage, capturedAtMs: number, n
   if (!recognized.candidates.length && pendingOnlineMeal && scope && mealCredentialScope() === scope) {
     return { parcel, meals: { ids: putMealObservations(scope, [pendingOnlineMeal], true), scope } };
   }
-  if (!onlineQR && (parcel.lookup || parcel.independent) || !recognized.candidates.length || !scope || mealCredentialScope() !== scope) {
+  if ((!onlineQR && (parcel.lookup || parcel.independent || !recognized.candidates.length)) || !scope || mealCredentialScope() !== scope) {
     return { parcel };
   }
   note.stage = "meal_recognition";

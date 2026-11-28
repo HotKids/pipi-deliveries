@@ -171,7 +171,7 @@ const CAPTURE_JD_FORECASTS = `(() => {
   window.__pipiDeliveriesJdForecastDealId = new URLSearchParams(location.search).get('dealId') || '';
   const output = window.__pipiDeliveriesJdForecasts = [];
   const recHeadingRe = /可能您还想要|猜你喜欢|为你推荐/;
-  const recKeyRe = /^(?:recommend\\w*|recList|recFloor\\w*|guess\\w*|mayLike\\w*|feed\\w*|adList|ads|banner\\w*)$/i;
+  const recKeyRe = /^(?:recommend(?:ation|s|List|Floor|Info|Data|Ware\\w*)?|rec(?:List|Floor|Items?|Wares?)|guess(?:YouLike|List|Wares?)?|mayLike(?:List|Wares?)?|feeds?|feed(?:List|Floor|Stream|Items?)|ads?|ad(?:List|Floor|Info|Slot|Banner|s)|banners?|hot(?:List|Recommend|Wares?|Words?)|diviner\\w*)$/i;
   let bytes = 0;
   function beforeRecommendations(raw) {
     return typeof raw === 'string' ? raw.split(recHeadingRe, 1)[0] : '';
@@ -224,33 +224,73 @@ const CAPTURE_JD_FORECASTS = `(() => {
       scanJson(child, depth + 1);
     }
   }
-  function approved(address) {
+  function bodyHintFrom(rawBody) {
+    if (!rawBody) return '';
+    if (typeof rawBody === 'string') return rawBody.slice(0, 4096);
+    if (typeof URLSearchParams === 'function' && rawBody instanceof URLSearchParams) {
+      return rawBody.toString().slice(0, 4096);
+    }
+    if (typeof FormData === 'function' && rawBody instanceof FormData && typeof rawBody.get === 'function') {
+      const fn = rawBody.get('functionId');
+      return typeof fn === 'string' ? 'functionId=' + fn : '';
+    }
+    if (typeof rawBody === 'object' && typeof rawBody.functionId === 'string') {
+      return 'functionId=' + rawBody.functionId;
+    }
+    return '';
+  }
+  function extractFunctionId(url, bodyHint) {
+    const fromUrl = url.searchParams.get('functionId') || '';
+    if (fromUrl) return fromUrl;
+    if (typeof bodyHint !== 'string' || !bodyHint) return '';
+    const encoded = /(?:^|[?&])functionId=([^&#]+)/i.exec(bodyHint);
+    if (encoded) {
+      try { return decodeURIComponent(encoded[1]); } catch (_) { return encoded[1]; }
+    }
+    if (bodyHint.includes('functionId')) {
+      const jsonMatch = /"functionId"\\s*:\\s*"([^"]+)"/i.exec(bodyHint);
+      if (jsonMatch) return jsonMatch[1];
+    }
+    return '';
+  }
+  function hasExcludedToken(text) {
+    if (!text) return false;
+    if (/(?:recommend|diviner|guess|youlike|maylike|banner|advert|marketing|coupon|comment|browse)/i.test(text)) {
+      return true;
+    }
+    if (/(?:(?:^|[^A-Za-z])(?:ad|ads)|(?<=[a-z])(?:Ad|Ads))(?=$|[^a-z])/.test(text)) {
+      return true;
+    }
+    if (/(?:(?:^|[^A-Za-z])hot|(?<=[a-z])Hot)(?=$|[^a-z])/.test(text)) {
+      return true;
+    }
+    return false;
+  }
+  function approved(address, bodyHint) {
     try {
       const url = new URL(address, location.href);
       if (url.protocol !== 'https:' || url.username || url.password) return false;
+      if (url.hostname !== 'trade.m.jd.com' && url.hostname !== 'api.m.jd.com') return false;
       const full = url.pathname + url.search;
-      if (/(?:recommend|diviner|guess|youlike|maylike|banner|advert|marketing|coupon|comment|browse)/i.test(full)) {
-        return false;
-      }
+      const fnId = extractFunctionId(url, bodyHint);
+      if (hasExcludedToken(full) || hasExcludedToken(fnId)) return false;
+      const target = fnId ? full + '&functionId=' + fnId : full;
       if (url.hostname === 'trade.m.jd.com') {
-        return /(?:order|wuliu|track|logistics|waybill|deal)/i.test(full);
+        return /(?:order|wuliu|track|logistics|waybill|deal|detail|parcel|express|delivery|promise|snapshot)/i.test(target);
       }
-      if (url.hostname === 'api.m.jd.com') {
-        return /(?:order|track|wuliu|logistics|waybill|promise|delivery|express|parcel|union|deal)/i.test(full);
-      }
-      return false;
+      return /(?:order|track|wuliu|logistics|waybill|promise|delivery|express|parcel|union|deal|detail|progress|snapshot)/i.test(target);
     } catch (_) {
       return false;
     }
   }
-  function keep(address, text) {
+  function keep(address, text, bodyHint) {
     const currentDealId = new URLSearchParams(location.search).get('dealId') || '';
     if (window.__pipiDeliveriesJdForecastDealId !== currentDealId) {
       window.__pipiDeliveriesJdForecastDealId = currentDealId;
       output.length = 0;
       bytes = 0;
     }
-    if (!approved(address) || typeof text !== 'string' || !text || text.length > 1048576 || bytes + text.length > 2097152) return;
+    if (!approved(address, bodyHint) || typeof text !== 'string' || !text || text.length > 1048576 || bytes + text.length > 2097152) return;
     bytes += text.length;
     let trimmed = text.trim();
     const jsonp = /^[A-Za-z0-9_$]+\\(([\\s\\S]*)\\)\\s*;?$/.exec(trimmed);
@@ -266,11 +306,14 @@ const CAPTURE_JD_FORECASTS = `(() => {
   if (typeof window.fetch === 'function') {
     const fetchPage = window.fetch;
     window.fetch = function (...args) {
-      const reqUrl = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+      const first = args[0];
+      const init = args[1];
+      const reqUrl = typeof first === 'string' ? first : (first?.url || '');
+      const reqHint = bodyHintFrom(init?.body) || bodyHintFrom(first?.body);
       return fetchPage.apply(this, args).then(response => {
         const targetUrl = response?.url || reqUrl;
-        if (response?.ok && approved(targetUrl) && typeof response.clone === 'function') {
-          response.clone().text().then(text => keep(targetUrl, text)).catch(() => {});
+        if (response?.ok && approved(targetUrl, reqHint) && typeof response.clone === 'function') {
+          response.clone().text().then(text => keep(targetUrl, text, reqHint)).catch(() => {});
         }
         return response;
       });
@@ -286,13 +329,14 @@ const CAPTURE_JD_FORECASTS = `(() => {
     }
     const send = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.send = function (...args) {
+      const reqHint = bodyHintFrom(args[0]);
       if (typeof this.addEventListener === 'function') {
         this.addEventListener('load', () => {
           const targetUrl = this.responseURL || this.__pipiJdUrl || '';
-          if (this.status >= 200 && this.status < 300 && approved(targetUrl)) {
-            if (this.responseType === '' || this.responseType === 'text') keep(targetUrl, this.responseText);
+          if (this.status >= 200 && this.status < 300 && approved(targetUrl, reqHint)) {
+            if (this.responseType === '' || this.responseType === 'text') keep(targetUrl, this.responseText, reqHint);
             else if (this.responseType === 'json') {
-              try { keep(targetUrl, JSON.stringify(this.response)); } catch (_) {}
+              try { keep(targetUrl, JSON.stringify(this.response), reqHint); } catch (_) {}
             }
           }
         }, { once: true });

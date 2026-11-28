@@ -232,9 +232,14 @@ function stripRecognizedProducts(productEvidence: string, artworkEvidence: strin
   const pushVariants = (name: string) => {
     const trimmed = clean(name)
     if (!trimmed) return
-    candidates.add(trimmed)
-    candidates.add(trimmed.replace(/（/gu, "(").replace(/）/gu, ")"))
-    candidates.add(trimmed.replace(/\(/gu, "（").replace(/\)/gu, "）"))
+    const withoutMarks = /[®™]/u.test(trimmed)
+      ? trimmed.replace(/(?<= )[®™] /gu, "").replace(/[®™]/gu, "").trim()
+      : trimmed
+    for (const base of withoutMarks && withoutMarks !== trimmed ? [trimmed, withoutMarks] : [trimmed]) {
+      candidates.add(base)
+      candidates.add(base.replace(/（/gu, "(").replace(/）/gu, ")"))
+      candidates.add(base.replace(/\(/gu, "（").replace(/\)/gu, "）"))
+    }
   }
   pushVariants(productEvidence)
   for (const segment of productEvidence.split(/\s*(?:\+|＋|\/|、|，|,|\|)\s*/u)) {
@@ -256,15 +261,16 @@ function resolveTemperature(
   const hotKeywords = strings(hotCold.hot)
   const prod = clean(productEvidence)
   const extra = clean(artworkEvidence)
-  if (prod && extra) {
-    const rest = stripIngredients(hotCold, stripRecognizedProducts(prod, extra))
-    const restCold = containsAny(rest, coldKeywords)
-    const restHot = containsAny(rest, hotKeywords)
-    if (restCold !== restHot) return restCold ? "cold" : "hot"
-  }
-  const value = stripIngredients(hotCold, extra || prod)
-  if (containsAny(value, coldKeywords)) return "cold"
-  if (containsAny(value, hotKeywords)) return "hot"
+  if (!extra) return "unknown"
+  const rest = prod ? stripRecognizedProducts(prod, extra) : extra
+  const value = stripIngredients(hotCold, rest)
+  if (!clean(value)) return "unknown"
+  const hasCold = containsAny(value, coldKeywords)
+  const hasHot = containsAny(value, hotKeywords)
+  if (hasCold && !hasHot) return "cold"
+  if (hasHot && !hasCold) return "hot"
+  if (hasCold) return "cold"
+  if (hasHot) return "hot"
   return "unknown"
 }
 
